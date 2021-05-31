@@ -1,4 +1,6 @@
 import sys
+import logging
+from datetime import datetime
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
@@ -9,16 +11,20 @@ from asyncua.sync import Client, SyncNode
 from asyncua.tools import endpoint_to_strings
 
 from uawidgets import *
-from uawidgets import tree_widget
+from uawidgets import tree_widget, refs_widget, attrs_widget
+from uawidgets.utils import trycatchslot
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # self.setGeometry(100, 200, 300, 200)
+        self.setGeometry(100, 200, 300, 200)
         self.setWindowTitle("OPC UA Trans")
 
         self.setObjectName("MainWindow")
+        self.move(100, 50)
         self.resize(922, 879)
         # icon = QtGui.QIcon()
         # icon.addPixmap(QtGui.QPixmap("../network.svg"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
@@ -301,16 +307,16 @@ class MainWindow(QMainWindow):
         self.spinBoxNumberOfPoints.setProperty("value", 30)
         self.horizontalLayout.addWidget(self.spinBoxNumberOfPoints)
 
-        self.labelIntervall = QtWidgets.QLabel(self.graphDockWidgetContents)
-        self.labelIntervall.setObjectName("labelIntervall")
-        self.horizontalLayout.addWidget(self.labelIntervall)
+        self.labelInterval = QtWidgets.QLabel(self.graphDockWidgetContents)
+        self.labelInterval.setObjectName("labelInterval")
+        self.horizontalLayout.addWidget(self.labelInterval)
 
-        self.spinBoxIntervall = QtWidgets.QSpinBox(self.graphDockWidgetContents)
-        self.spinBoxIntervall.setObjectName("spinBoxIntervall")
-        self.spinBoxIntervall.setMinimum(1)
-        self.spinBoxIntervall.setMaximum(3600)
-        self.spinBoxIntervall.setProperty("value", 5)
-        self.horizontalLayout.addWidget(self.spinBoxIntervall)
+        self.spinBoxInterval = QtWidgets.QSpinBox(self.graphDockWidgetContents)
+        self.spinBoxInterval.setObjectName("spinBoxInterval")
+        self.spinBoxInterval.setMinimum(1)
+        self.spinBoxInterval.setMaximum(3600)
+        self.spinBoxInterval.setProperty("value", 5)
+        self.horizontalLayout.addWidget(self.spinBoxInterval)
 
         self.buttonApply = QtWidgets.QPushButton(self.graphDockWidgetContents)
         self.buttonApply.setObjectName("buttonApply")
@@ -418,14 +424,25 @@ class MainWindow(QMainWindow):
         #     self.addrComboBox.insertItem(i, addr)
         self.addrComboBox.addItems(self._address_list)
 
+        #################################################
+        #################################################
 
-        # self.uaclient = UaClient()
+        # self.uaclient = Client()
 
         self.tree_ui = tree_widget.TreeWidget(self.treeView)
         self.tree_ui.error.connect(self.show_error)
         self.setup_context_menu_tree()
-        self.ui.treeView.selectionModel().currentChanged.connect(self._update_actions_state)
+        # self.ui.treeView.selectionModel().currentChanged.connect(self._update_actions_state)
+        self.treeView.selectionModel().selectionChanged.connect(self.show_attrs)
 
+        self.refs_ui = refs_widget.RefsWidget(self.refView)
+        self.refs_ui.error.connect(self.show_error)
+        self.attrs_ui = attrs_widget.AttrsWidget(self.attrView)
+        self.attrs_ui.error.connect(self.show_error)
+
+        # self.datachange_ui = DataChangeUI(self, self.uaclient)
+        # self.event_ui = EventUI(self, self.uaclient)
+        # self.graph_ui = GraphUI(self, self.uaclient)
 
         ##############################
 
@@ -446,7 +463,7 @@ class MainWindow(QMainWindow):
         self.eventDockWidget.setWindowTitle(_translate("MainWindow", "&Events"))
         self.graphDockWidget.setWindowTitle(_translate("MainWindow", "&Graph"))
         self.labelNumberOfPoints.setText(_translate("MainWindow", "Number of Points"))
-        self.labelIntervall.setText(_translate("MainWindow", "Intervall [s]"))
+        self.labelInterval.setText(_translate("MainWindow", "Intervall [s]"))
         self.buttonApply.setText(_translate("MainWindow", "Apply"))
 
         self.actionConnect.setText(_translate("MainWindow", "&Connect"))
@@ -527,8 +544,41 @@ class MainWindow(QMainWindow):
             node = self.client.get_node(node)
         attrs = node.read_attributes([ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId])
 
-
         return node, [attr.Value.Value.to_string() for attr in attrs]
+
+    def setup_context_menu_tree(self):
+        self.treeView.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.treeView.customContextMenuRequested.connect(self._show_context_menu_tree)
+        self._contextMenu = QMenu()
+        self._contextMenu.addAction(self.actionCopyPath)
+        self._contextMenu.addAction(self.actionCopyNodeId)
+        self._contextMenu.addSeparator()
+        self._contextMenu.addAction(self.actionCall)
+        self._contextMenu.addSeparator()
+
+    def _show_context_menu_tree(self, position):
+        node = self.tree_ui.get_current_node()
+        if node:
+            self._contextMenu.exec_(self.treeView.viewport().mapToGlobal(position))
+
+    @trycatchslot
+    def show_attrs(self, selection):
+        if isinstance(selection, QItemSelection):
+            if not selection.indexes(): # no selection
+                return
+
+        node = self.get_current_node()
+        if node:
+            self.attrs_ui.show_attrs(node)
+
+    def show_error(self, msg):
+        logger.warning("showing error: %s")
+        self.statusBar.show()
+        self.statusBar.setStyleSheet("QStatusBar { background-color : red; color : black; }")
+        self.statusBar.showMessage(str(msg))
+        # QTimer.singleShot(1500, self.statusBar.hide)
+        QTimer.singleShot(1500, self.statusBar.showMessage(''))
+
 
 if __name__ == '__main__':
 
