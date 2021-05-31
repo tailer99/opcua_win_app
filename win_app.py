@@ -2,10 +2,12 @@ import sys
 import logging
 from datetime import datetime
 
+from PyQt5.QtGui import QStandardItem, QIcon
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5 import QtCore, QtGui, QtWidgets
 import opcua
+from opcua import Node
 from asyncua import ua
 from asyncua.sync import Client, SyncNode
 from asyncua.tools import endpoint_to_strings
@@ -24,8 +26,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OPC UA Trans")
 
         self.setObjectName("MainWindow")
-        self.move(100, 50)
-        self.resize(922, 879)
+        # self.move(100, 50)
+        # self.resize(922, 879)
         # icon = QtGui.QIcon()
         # icon.addPixmap(QtGui.QPixmap("../network.svg"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
         # self.setWindowIcon(icon)
@@ -433,20 +435,63 @@ class MainWindow(QMainWindow):
         self.tree_ui.error.connect(self.show_error)
         self.setup_context_menu_tree()
         # self.ui.treeView.selectionModel().currentChanged.connect(self._update_actions_state)
+        self.treeView.selectionModel().selectionChanged.connect(self.show_refs)
         self.treeView.selectionModel().selectionChanged.connect(self.show_attrs)
+        self.attrRefreshButton.clicked.connect(self.show_attrs)
+        # 상단 메뉴에서 연결
+        self.actionCopyPath.triggered.connect(self.tree_ui.copy_path)
+        self.actionCopyNodeId.triggered.connect(self.tree_ui.copy_nodeid)
 
         self.refs_ui = refs_widget.RefsWidget(self.refView)
         self.refs_ui.error.connect(self.show_error)
         self.attrs_ui = attrs_widget.AttrsWidget(self.attrView)
         self.attrs_ui.error.connect(self.show_error)
 
+        # TODO datachange, event 연결
         # self.datachange_ui = DataChangeUI(self, self.uaclient)
         # self.event_ui = EventUI(self, self.uaclient)
         # self.graph_ui = GraphUI(self, self.uaclient)
 
+        # TODO 동작 안함
+        self.addrComboBox.currentTextChanged.connect(self._uri_changed)
+        self._uri_changed(self.addrComboBox.currentText())  # force update for current value at startup
+
+        # TODO 동작 안함
+        # print(int(self.settings.value("main_window_width", 1000)), int(self.settings.value("main_window_height", 800)))
+        self.resize(int(self.settings.value("main_window_width", 1000)), int(self.settings.value("main_window_height", 800)))
+        data = self.settings.value("main_window_state", None)
+        if data:
+            self.restoreState(data)
+
+        self.connectButton.clicked.connect(self.connect)
+        self.disconnectButton.clicked.connect(self.disconnect)
+        # self.connectOptionButton.clicked.connect(self.show_connection_dialog)
+        # 상단 메뉴에서 연결
+        self.actionConnect.triggered.connect(self.connect)
+        self.actionDisconnect.triggered.connect(self.disconnect)
+        self.actionDark_Mode.triggered.connect(self.dark_mode)
+
         ##############################
 
         self.client = None
+        self._connected = False
+        self._datachange_sub = None
+        self._event_sub = None
+        self._subs_datachange = {}
+        self._subs_event = {}
+
+        self.security_mode = None
+        self.security_policy = None
+        self.certificate_path = None
+        self.private_key_path = None
+
+    def _reset(self):
+        self.client = None
+        self._connected = False
+        self._datachange_sub = None
+        self._event_sub = None
+        self._subs_datachange = {}
+        self._subs_event = {}
 
     def retranslateUi(self):
         _translate = QtCore.QCoreApplication.translate
@@ -492,13 +537,58 @@ class MainWindow(QMainWindow):
         self.actionDark_Mode.setText(_translate("MainWindow", "Dark Mode"))
         self.actionDark_Mode.setStatusTip(_translate("MainWindow", "Enables Dark Mode Theme"))
 
+    # def connect(self):
+    #     endpoint_url = 'opc.tcp://10.178.59.49:7560/System1OPCUAServer'
+    #     self.client = Client(endpoint_url, timeout=2)
+    #     self.client.connect()
+
+    @trycatchslot
     def connect(self):
-        endpoint_url = 'opc.tcp://10.178.59.49:7560/System1OPCUAServer'
-        self.client = Client(endpoint_url, timeout=2)
-        self.client.connect()
+        endpoint_url = self.addrComboBox.currentText()
+        endpoint_url = endpoint_url.strip()
+        try:
+            self.client = Client(endpoint_url, timeout=2)
+            self.client.connect()
+        except Exception as ex:
+            self.show_error(ex)
+            raise
+
+        self._update_address_list(endpoint_url)
+        print('a ', self.client.nodes.root, type(self.client.nodes.root))
+        aa = self.client.get_node(str(self.client.nodes.root))
+        print(aa, type(aa))
+        # self.tree_ui.set_root_node(self.client.nodes.root)
+
+        root_node = self.client.nodes.root
+        attrs = root_node.read_attributes([ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId, ua.AttributeIds.NodeClass])
+        desc = ua.ReferenceDescription()
+        desc.DisplayName = attrs[0].Value.Value
+        desc.BrowseName = attrs[1].Value.Value
+        desc.NodeId = attrs[2].Value.Value
+        desc.NodeClass = attrs[3].Value.Value
+        desc.TypeDefinition = ua.TwoByteNodeId(ua.ObjectIds.FolderType)
+        print('desc : ', desc, '  >>> ', desc.DisplayName.Text)
+        self.tree_ui.model.add_item(desc, node=root_node)
+
+
+        self.treeView.setFocus()
+        # self.load_current_node()
+        # self.search_node()
 
     def disconnect(self):
         self.client.disconnect()
+
+    def _update_address_list(self, uri):
+        if uri == self._address_list[0]:
+            return
+        if uri in self._address_list:
+            self._address_list.remove(uri)
+        self._address_list.insert(0, uri)
+        if len(self._address_list) > self._address_list_max_count:
+            self._address_list.pop(-1)
+
+    def get_current_node(self, idx=None):
+        return self.tree_ui.get_current_node(idx)
 
     def get_child_node(self, nodeid):
         print(nodeid, type(nodeid), self.client)
@@ -538,7 +628,6 @@ class MainWindow(QMainWindow):
         #         print(node1, len(node1), type(node1))
         #         a += 1
 
-
     def get_node_attrs(self, node):
         if not isinstance(node, SyncNode):
             node = self.client.get_node(node)
@@ -561,15 +650,62 @@ class MainWindow(QMainWindow):
         if node:
             self._contextMenu.exec_(self.treeView.viewport().mapToGlobal(position))
 
+    def _uri_changed(self, uri):
+        self.load_security_settings(uri)
+
+    @trycatchslot
+    def show_refs(self, selection):
+        if isinstance(selection, QItemSelection):
+            if not selection.indexes():  # no selection
+                return
+
+        node = self.get_current_node()
+        if node:
+            self.refs_ui.show_refs(node)
+
     @trycatchslot
     def show_attrs(self, selection):
         if isinstance(selection, QItemSelection):
-            if not selection.indexes(): # no selection
+            if not selection.indexes():  # no selection
                 return
 
         node = self.get_current_node()
         if node:
             self.attrs_ui.show_attrs(node)
+
+    def load_security_settings(self, uri):
+        self.security_mode = None
+        self.security_policy = None
+        self.certificate_path = None
+        self.private_key_path = None
+
+        mysettings = self.settings.value("security_settings", None)
+        if mysettings is None:
+            return
+        if uri in mysettings:
+            mode, policy, cert, key = mysettings[uri]
+            self.security_mode = mode
+            self.security_policy = policy
+            self.certificate_path = cert
+            self.private_key_path = key
+
+    def save_security_settings(self, uri):
+        mysettings = self.settings.value("security_settings", None)
+        if mysettings is None:
+            mysettings = {}
+        mysettings[uri] = [self.security_mode,
+                           self.security_policy,
+                           self.certificate_path,
+                           self.private_key_path]
+        self.settings.setValue("security_settings", mysettings)
+
+    def dark_mode(self):
+        self.settings.setValue("dark_mode", self.actionDark_Mode.isChecked())
+
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Information)
+        msg.setText("Restart for changes to take effect")
+        msg.exec_()
 
     def show_error(self, msg):
         logger.warning("showing error: %s")
