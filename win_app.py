@@ -569,10 +569,8 @@ class MainWindow(QMainWindow):
         desc.TypeDefinition = ua.TwoByteNodeId(ua.ObjectIds.FolderType)
         print('desc : ', desc, '  >>> ', desc.DisplayName.Text)
         self.tree_ui.model.add_item(desc, node=root_node)
-
-
         self.treeView.setFocus()
-        # self.load_current_node()
+        self.load_current_node()
         # self.search_node()
 
     def disconnect(self):
@@ -649,6 +647,16 @@ class MainWindow(QMainWindow):
         node = self.tree_ui.get_current_node()
         if node:
             self._contextMenu.exec_(self.treeView.viewport().mapToGlobal(position))
+
+    def load_current_node(self):
+        mysettings = self.settings.value("current_node", None)
+        if mysettings is None:
+            return
+        uri = self.addrComboBox.currentText()
+        if uri in mysettings:
+            nodeid = ua.NodeId.from_string(mysettings[uri])
+            node = self.client.get_node(nodeid)
+            self.tree_ui.expand_to_node(node)
 
     def _uri_changed(self, uri):
         self.load_security_settings(uri)
