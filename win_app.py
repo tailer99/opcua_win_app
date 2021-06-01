@@ -2,7 +2,7 @@ import sys
 import logging
 from datetime import datetime
 
-from PyQt5.QtGui import QStandardItem, QIcon
+from PyQt5.QtGui import QStandardItem, QIcon, QStandardItemModel
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -17,6 +17,185 @@ from uawidgets import tree_widget, refs_widget, attrs_widget
 from uawidgets.utils import trycatchslot
 
 logger = logging.getLogger(__name__)
+
+
+class DataChangeHandler(QObject):
+    data_change_fired = pyqtSignal(object, str, str)
+
+    def datachange_notification(self, node, val, data):
+        if data.monitored_item.Value.SourceTimestamp:
+            data_ts = data.monitored_item.Value.SourceTimestamp.isoformat()
+        elif data.monitored_item.Value.ServerTimestamp:
+            data_ts = data.monitored_item.Value.ServerTimestamp.isoformat()
+        else:
+            data_ts = datetime.now().isoformat()
+        self.data_change_fired.emit(node, str(val), data_ts)
+
+
+class DataChangeUI(object):
+
+    def __init__(self, window, client):
+        self.window = window
+        self.client = client
+        self._subhandler = DataChangeHandler()
+        self._subscribed_nodes = []
+        self.model = QStandardItemModel()
+        self.window.subView.setModel(self.model)
+        self.window.subView.horizontalHeader().setSectionResizeMode(1)
+
+        self.window.actionSubscribeDataChange.triggered.connect(self._subscribe)
+        self.window.actionUnsubscribeDataChange.triggered.connect(self._unsubscribe)
+
+        # populate contextual menu
+        self.window.addAction(self.window.actionSubscribeDataChange)
+        self.window.addAction(self.window.actionUnsubscribeDataChange)
+
+        # handle subscriptions
+        self._subhandler.data_change_fired.connect(self._update_subscription_model, type=Qt.QueuedConnection)
+
+        # accept drops
+        self.model.canDropMimeData = self.canDropMimeData
+        self.model.dropMimeData = self.dropMimeData
+
+    def canDropMimeData(self, mdata, action, row, column, parent):
+        return True
+
+    def dropMimeData(self, mdata, action, row, column, parent):
+        node = self.uaclient.client.get_node(mdata.text())
+        self._subscribe(node)
+        return True
+
+    def clear(self):
+        self._subscribed_nodes = []
+        self.model.clear()
+
+    def show_error(self, *args):
+        self.window.show_error(*args)
+
+    @trycatchslot
+    def _subscribe(self, node=None):
+        if not isinstance(node, SyncNode):
+            node = self.window.get_current_node()
+            if node is None:
+                return
+        if node in self._subscribed_nodes:
+            logger.warning("allready subscribed to node: %s ", node)
+            return
+        self.model.setHorizontalHeaderLabels(["DisplayName", "Value", "Timestamp"])
+        text = node.read_display_name().Text
+        row = [QStandardItem(text), QStandardItem("No Data yet"), QStandardItem("")]
+        row[0].setData(node)
+        self.model.appendRow(row)
+        self._subscribed_nodes.append(node)
+        self.window.subDockWidget.raise_()
+        try:
+            self.window.subscribe_datachange(node, self._subhandler)
+        except Exception as ex:
+            self.window.show_error(ex)
+            idx = self.model.indexFromItem(row[0])
+            self.model.takeRow(idx.row())
+            raise
+
+    @trycatchslot
+    def _unsubscribe(self):
+        node = self.window.get_current_node()
+        if node is None:
+            return
+        self.window.unsubscribe_datachange(node)
+        self._subscribed_nodes.remove(node)
+        i = 0
+        while self.model.item(i):
+            item = self.model.item(i)
+            if item.data() == node:
+                self.model.removeRow(i)
+            i += 1
+
+    def _update_subscription_model(self, node, value, timestamp):
+        i = 0
+        while self.model.item(i):
+            item = self.model.item(i)
+            if item.data() == node:
+                it = self.model.item(i, 1)
+                it.setText(value)
+                it_ts = self.model.item(i, 2)
+                it_ts.setText(timestamp)
+            i += 1
+
+
+class EventHandler(QObject):
+    event_fired = pyqtSignal(object)
+
+    def event_notification(self, event):
+        self.event_fired.emit(event)
+
+
+class EventUI(object):
+
+    def __init__(self, window, uaclient):
+        self.window = window
+        self.uaclient = uaclient
+        self._handler = EventHandler()
+        self._subscribed_nodes = []  # FIXME: not really needed
+        self.model = QStandardItemModel()
+        self.window.eventView.setModel(self.model)
+        self.window.actionSubscribeEvent.triggered.connect(self._subscribe)
+        self.window.actionUnsubscribeEvents.triggered.connect(self._unsubscribe)
+        # context menu
+        self.window.addAction(self.window.actionSubscribeEvent)
+        self.window.addAction(self.window.actionUnsubscribeEvents)
+        self.window.addAction(self.window.actionAddToGraph)
+        self._handler.event_fired.connect(self._update_event_model, type=Qt.QueuedConnection)
+
+        # accept drops
+        self.model.canDropMimeData = self.canDropMimeData
+        self.model.dropMimeData = self.dropMimeData
+
+    def canDropMimeData(self, mdata, action, row, column, parent):
+        return True
+
+    def show_error(self, *args):
+        self.window.show_error(*args)
+
+    def dropMimeData(self, mdata, action, row, column, parent):
+        node = self.uaclient.client.get_node(mdata.text())
+        self._subscribe(node)
+        return True
+
+    def clear(self):
+        self._subscribed_nodes = []
+        self.model.clear()
+
+    @trycatchslot
+    def _subscribe(self, node=None):
+        logger.info("Subscribing to %s", node)
+        if not node:
+            node = self.window.get_current_node()
+            if node is None:
+                return
+        if node in self._subscribed_nodes:
+            logger.info("already subscribed to event for node: %s", node)
+            return
+        logger.info("Subscribing to events for %s", node)
+        self.window.eventDockWidget.raise_()
+        try:
+            self.uaclient.subscribe_events(node, self._handler)
+        except Exception as ex:
+            self.window.show_error(ex)
+            raise
+        else:
+            self._subscribed_nodes.append(node)
+
+    @trycatchslot
+    def _unsubscribe(self):
+        node = self.window.get_current_node()
+        if node is None:
+            return
+        self._subscribed_nodes.remove(node)
+        self.uaclient.unsubscribe_events(node)
+
+    @trycatchslot
+    def _update_event_model(self, event):
+        self.model.appendRow([QStandardItem(str(event))])
 
 
 class MainWindow(QMainWindow):
@@ -442,15 +621,18 @@ class MainWindow(QMainWindow):
         self.actionCopyPath.triggered.connect(self.tree_ui.copy_path)
         self.actionCopyNodeId.triggered.connect(self.tree_ui.copy_nodeid)
 
+        self.connectButton.clicked.connect(self.connect)
+        self.disconnectButton.clicked.connect(self.disconnect)
+        # self.connectOptionButton.clicked.connect(self.show_connection_dialog)
+        # 상단 메뉴에서 연결
+        self.actionConnect.triggered.connect(self.connect)
+        self.actionDisconnect.triggered.connect(self.disconnect)
+        self.actionDark_Mode.triggered.connect(self.dark_mode)
+
         self.refs_ui = refs_widget.RefsWidget(self.refView)
         self.refs_ui.error.connect(self.show_error)
         self.attrs_ui = attrs_widget.AttrsWidget(self.attrView)
         self.attrs_ui.error.connect(self.show_error)
-
-        # TODO datachange, event 연결
-        # self.datachange_ui = DataChangeUI(self, self.uaclient)
-        # self.event_ui = EventUI(self, self.uaclient)
-        # self.graph_ui = GraphUI(self, self.uaclient)
 
         # TODO 동작 안함
         self.addrComboBox.currentTextChanged.connect(self._uri_changed)
@@ -462,14 +644,6 @@ class MainWindow(QMainWindow):
         data = self.settings.value("main_window_state", None)
         if data:
             self.restoreState(data)
-
-        self.connectButton.clicked.connect(self.connect)
-        self.disconnectButton.clicked.connect(self.disconnect)
-        # self.connectOptionButton.clicked.connect(self.show_connection_dialog)
-        # 상단 메뉴에서 연결
-        self.actionConnect.triggered.connect(self.connect)
-        self.actionDisconnect.triggered.connect(self.disconnect)
-        self.actionDark_Mode.triggered.connect(self.dark_mode)
 
         ##############################
 
@@ -484,6 +658,8 @@ class MainWindow(QMainWindow):
         self.security_policy = None
         self.certificate_path = None
         self.private_key_path = None
+
+        ##############################
 
     def _reset(self):
         self.client = None
@@ -544,58 +720,47 @@ class MainWindow(QMainWindow):
         try:
             self.client = Client(endpoint_url, timeout=2)
             self.client.connect()
+
+            # client 연결 후 초기화 시킴
+            self.datachange_ui = DataChangeUI(self, self.client)
+            self.event_ui = EventUI(self, self.client)
+
+            # self.graph_ui = GraphUI(self, self.uaclient)
         except Exception as ex:
             self.show_error(ex)
             raise
 
         self._update_address_list(endpoint_url)
 
+        self.retrieve_tree()
+
+    # Tree 항목들을 조회후 펼치기
+    def retrieve_tree(self):
+
+        root_node = self.client.nodes.root
         # self.tree_ui.set_root_node(self.client.nodes.root)
-        root_node = "ns=4;s=e1b9f72a-1498-47d7-b4f6-a311ee46d223"
-        machine_root_node = "ns=4;s=0ae9d927-848a-4847-b018-0e08ba0e5ba4"
-        self.tree_ui.set_root_node(self.client.get_node(machine_root_node))
+        # print('root_node_attr : ', type(root_node), self.get_node_attrs(root_node))
+
+        descs = root_node.get_children_descriptions()
+        descs.sort(key=lambda x: x.BrowseName)
+        for node in descs:
+            if node.DisplayName.Text == "Objects":
+                # print(type(node), type(node.NodeId), node.NodeId)
+                c_descs = self.client.get_node(node.NodeId).get_children_descriptions()
+                # print(c_descs)
+                for c_node in c_descs:
+                    if c_node.DisplayName.Text == "Server":
+                        pass
+                    else:
+                        root_node = self.client.get_node(c_node.NodeId)
+        # print(' root_node : ', root_node)
+        self.tree_ui.set_root_node(root_node)
         self.treeView.setFocus()
         self.treeView.expandToDepth(5)
-        print(self.treeView.currentIndex().row(), self.treeView.currentIndex().data())
-        print(self.treeView.currentIndex().child(0,0).data())
-
-        # self.treeView.setExpanded(self.treeView.currentIndex().child(0, 0))
-
-        # self.tree_ui.model.set_root_node(self.client.nodes.root)
-        # self.tree_ui.model.fetchMore(self.treeView.rootIndex())
-        # self.treeView.expand(self.treeView.rootIndex())
 
 
-        # self.treeView.setFocus()
-        # self.load_current_node()
-        # self.tree_ui.expand_to_node(self.client.nodes.root)
-
-        # print('root_node_attr : ', self.get_node_attrs(root_node))
-        # child_node = self.get_child_node(root_node)
-        # print(' get_child_node : ', child_node)
-        #
-        # descs = root_node.get_children_descriptions()
-        # descs.sort(key=lambda x: x.BrowseName)
-        # print('descs : ', descs)
-        #
-        # for node in child_node:
-        #     attrs = node.read_attributes(
-        #         [ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId,
-        #          ua.AttributeIds.NodeClass])
-        #     print('node attrs : ', attrs)
-        #     desc = ua.ReferenceDescription()
-        #     desc.DisplayName = attrs[0].Value.Value
-        #     desc.BrowseName = attrs[1].Value.Value
-        #     desc.NodeId = attrs[2].Value.Value
-        #     desc.NodeClass = attrs[3].Value.Value
-        #     desc.TypeDefinition = ua.TwoByteNodeId(ua.ObjectIds.FolderType)
-        #     print('node desc : ', desc, '  >>> ', desc.NodeId, ' xx ', desc.NodeId.to_string(), ' yy ',
-        #           desc.DisplayName.Text, '  ', desc.BrowseName.to_string())
-        #     self.tree_ui.model.add_item(desc, parent=QStandardItem(desc.BrowseName.to_string()), node=node)
-        #     # self.tree_ui.model.add_item(desc, parent=root_node, node=node)
-
-
-        # self.search_node()
+        # print(self.treeView.currentIndex().row(), self.treeView.currentIndex().data())
+        # print(self.treeView.currentIndex().child(0,0).data())
 
     def disconnect(self):
         self.client.disconnect()
@@ -678,6 +843,9 @@ class MainWindow(QMainWindow):
         if node:
             self._contextMenu.exec_(self.treeView.viewport().mapToGlobal(position))
 
+    def addAction(self, action):
+        self._contextMenu.addAction(action)
+
     def load_current_node(self):
         mysettings = self.settings.value("current_node", None)
         if mysettings is None:
@@ -744,6 +912,27 @@ class MainWindow(QMainWindow):
         msg.setIcon(QMessageBox.Information)
         msg.setText("Restart for changes to take effect")
         msg.exec_()
+
+    def subscribe_datachange(self, node, handler):
+        if not self._datachange_sub:
+            self._datachange_sub = self.client.create_subscription(500, handler)
+        handle = self._datachange_sub.subscribe_data_change(node)
+        self._subs_datachange[node.nodeid] = handle
+        return handle
+
+    def unsubscribe_datachange(self, node):
+        self._datachange_sub.unsubscribe(self._subs_datachange[node.nodeid])
+
+    def subscribe_events(self, node, handler):
+        if not self._event_sub:
+            print("subscirbing with handler: ", handler, dir(handler))
+            self._event_sub = self.client.create_subscription(500, handler)
+        handle = self._event_sub.subscribe_events(node)
+        self._subs_event[node.nodeid] = handle
+        return handle
+
+    def unsubscribe_events(self, node):
+        self._event_sub.unsubscribe(self._subs_ev[node.nodeid])
 
     def show_error(self, msg):
         logger.warning("showing error: %s")

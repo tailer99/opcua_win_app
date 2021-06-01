@@ -192,17 +192,17 @@ class TreeViewModel(QStandardItemModel):
             if desc.TypeDefinition == ua.TwoByteNodeId(ua.ObjectIds.PropertyType):
                 item[0].setIcon(QIcon("./uawidgets/property.svg"))
             else:
-                item[0].setIcon(QIcon(":/variable.svg"))
+                item[0].setIcon(QIcon("./uawidgets/variable.svg"))
         elif desc.NodeClass == ua.NodeClass.Method:
-            item[0].setIcon(QIcon(":/method.svg"))
+            item[0].setIcon(QIcon("./uawidgets/method.svg"))
         elif desc.NodeClass == ua.NodeClass.ObjectType:
-            item[0].setIcon(QIcon(":/object_type.svg"))
+            item[0].setIcon(QIcon("./uawidgets/object_type.svg"))
         elif desc.NodeClass == ua.NodeClass.VariableType:
-            item[0].setIcon(QIcon(":/variable_type.svg"))
+            item[0].setIcon(QIcon("./uawidgets/variable_type.svg"))
         elif desc.NodeClass == ua.NodeClass.DataType:
-            item[0].setIcon(QIcon(":/data_type.svg"))
+            item[0].setIcon(QIcon("./uawidgets/data_type.svg"))
         elif desc.NodeClass == ua.NodeClass.ReferenceType:
-            item[0].setIcon(QIcon(":/reference_type.svg"))
+            item[0].setIcon(QIcon("./uawidgets/reference_type.svg"))
         if node:
             item[0].setData(node, Qt.UserRole)
         else:
