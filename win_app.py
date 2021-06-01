@@ -537,11 +537,6 @@ class MainWindow(QMainWindow):
         self.actionDark_Mode.setText(_translate("MainWindow", "Dark Mode"))
         self.actionDark_Mode.setStatusTip(_translate("MainWindow", "Enables Dark Mode Theme"))
 
-    # def connect(self):
-    #     endpoint_url = 'opc.tcp://10.178.59.49:7560/System1OPCUAServer'
-    #     self.client = Client(endpoint_url, timeout=2)
-    #     self.client.connect()
-
     @trycatchslot
     def connect(self):
         endpoint_url = self.addrComboBox.currentText()
@@ -554,23 +549,52 @@ class MainWindow(QMainWindow):
             raise
 
         self._update_address_list(endpoint_url)
-        print('a ', self.client.nodes.root, type(self.client.nodes.root))
-        aa = self.client.get_node(str(self.client.nodes.root))
-        print(aa, type(aa))
-        # self.tree_ui.set_root_node(self.client.nodes.root)
 
-        root_node = self.client.nodes.root
-        attrs = root_node.read_attributes([ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId, ua.AttributeIds.NodeClass])
-        desc = ua.ReferenceDescription()
-        desc.DisplayName = attrs[0].Value.Value
-        desc.BrowseName = attrs[1].Value.Value
-        desc.NodeId = attrs[2].Value.Value
-        desc.NodeClass = attrs[3].Value.Value
-        desc.TypeDefinition = ua.TwoByteNodeId(ua.ObjectIds.FolderType)
-        print('desc : ', desc, '  >>> ', desc.DisplayName.Text)
-        self.tree_ui.model.add_item(desc, node=root_node)
+        # self.tree_ui.set_root_node(self.client.nodes.root)
+        root_node = "ns=4;s=e1b9f72a-1498-47d7-b4f6-a311ee46d223"
+        machine_root_node = "ns=4;s=0ae9d927-848a-4847-b018-0e08ba0e5ba4"
+        self.tree_ui.set_root_node(self.client.get_node(machine_root_node))
         self.treeView.setFocus()
-        self.load_current_node()
+        self.treeView.expandToDepth(5)
+        print(self.treeView.currentIndex().row(), self.treeView.currentIndex().data())
+        print(self.treeView.currentIndex().child(0,0).data())
+
+        # self.treeView.setExpanded(self.treeView.currentIndex().child(0, 0))
+
+        # self.tree_ui.model.set_root_node(self.client.nodes.root)
+        # self.tree_ui.model.fetchMore(self.treeView.rootIndex())
+        # self.treeView.expand(self.treeView.rootIndex())
+
+
+        # self.treeView.setFocus()
+        # self.load_current_node()
+        # self.tree_ui.expand_to_node(self.client.nodes.root)
+
+        # print('root_node_attr : ', self.get_node_attrs(root_node))
+        # child_node = self.get_child_node(root_node)
+        # print(' get_child_node : ', child_node)
+        #
+        # descs = root_node.get_children_descriptions()
+        # descs.sort(key=lambda x: x.BrowseName)
+        # print('descs : ', descs)
+        #
+        # for node in child_node:
+        #     attrs = node.read_attributes(
+        #         [ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId,
+        #          ua.AttributeIds.NodeClass])
+        #     print('node attrs : ', attrs)
+        #     desc = ua.ReferenceDescription()
+        #     desc.DisplayName = attrs[0].Value.Value
+        #     desc.BrowseName = attrs[1].Value.Value
+        #     desc.NodeId = attrs[2].Value.Value
+        #     desc.NodeClass = attrs[3].Value.Value
+        #     desc.TypeDefinition = ua.TwoByteNodeId(ua.ObjectIds.FolderType)
+        #     print('node desc : ', desc, '  >>> ', desc.NodeId, ' xx ', desc.NodeId.to_string(), ' yy ',
+        #           desc.DisplayName.Text, '  ', desc.BrowseName.to_string())
+        #     self.tree_ui.model.add_item(desc, parent=QStandardItem(desc.BrowseName.to_string()), node=node)
+        #     # self.tree_ui.model.add_item(desc, parent=root_node, node=node)
+
+
         # self.search_node()
 
     def disconnect(self):
@@ -588,12 +612,18 @@ class MainWindow(QMainWindow):
     def get_current_node(self, idx=None):
         return self.tree_ui.get_current_node(idx)
 
-    def get_child_node(self, nodeid):
-        print(nodeid, type(nodeid), self.client)
+    def get_child_node(self, node):
+        if not isinstance(node, SyncNode):
+            node = self.client.get_node(node)
 
-        node = self.client.get_node('i=84').get_children()
-        print(node)
-        return node
+        c_node = node.get_children()
+        return c_node
+
+    @staticmethod
+    def get_children(node):
+        descs = node.get_children_descriptions()
+        descs.sort(key=lambda x: x.BrowseName)
+        return descs
 
     def search_node(self):
         root_node_id = self.client.nodes.root
