@@ -75,20 +75,25 @@ class DataChangeUI(object):
 
     @trycatchslot
     def _subscribe(self, node=None):
+
         if not isinstance(node, SyncNode):
             node = self.window.get_current_node()
             if node is None:
                 return
+
         if node in self._subscribed_nodes:
-            logger.warning("allready subscribed to node: %s ", node)
+            # logger.warning("already subscribed to node: %s ", node)
             return
+
         self.model.setHorizontalHeaderLabels(["DisplayName", "Value", "Timestamp"])
         text = node.read_display_name().Text
         row = [QStandardItem(text), QStandardItem("No Data yet"), QStandardItem("")]
         row[0].setData(node)
         self.model.appendRow(row)
+
         self._subscribed_nodes.append(node)
         self.window.subDockWidget.raise_()
+
         try:
             self.window.subscribe_datachange(node, self._subhandler)
         except Exception as ex:
@@ -99,20 +104,22 @@ class DataChangeUI(object):
 
     @trycatchslot
     def _unsubscribe(self):
+
         node = self.window.get_current_node()
         if node is None:
             return
-        self.window.unsubscribe_datachange(node)
-        print(' before  _subscribed_nodes  : ', self._subscribed_nodes)
-        self._subscribed_nodes.remove(node)
-        print(' after   _subscribed_nodes  : ', self._subscribed_nodes)
-        i = 0
-        while self.model.item(i):
-            item = self.model.item(i)
-            if item.data() == node:
-                print(' Found : ', node)
-                self.model.removeRow(i)
-            i += 1
+
+        if node in self._subscribed_nodes:
+            self.window.unsubscribe_datachange(node)
+            self._subscribed_nodes.remove(node)
+
+            # TODO for 문으로 바꾸면 더 빠를 수 있음
+            i = 0
+            while self.model.item(i):
+                item = self.model.item(i)
+                if item.data() == node:
+                    self.model.removeRow(i)
+                i += 1
 
     def _update_subscription_model(self, node, value, timestamp):
         i = 0
@@ -172,40 +179,35 @@ class EventUI(object):
 
     @trycatchslot
     def _subscribe(self, node=None):
-        logger.info("Subscribing to %s", node)
-        print("11Subscribing to ", node)
+
         if not node:
             node = self.window.get_current_node()
             if node is None:
                 return
-        if node in self._subscribed_nodes:
+        # if node in self._subscribed_nodes:
+        #     logger.info("already subscribed to event for node: %s", node)
+        #     return
+        # node 별이 아니라 서버별 event 가 subscribe 되서 개수로만 체크함
+        if len(self._subscribed_nodes) > 0:
             logger.info("already subscribed to event for node: %s", node)
             return
-        logger.info("Subscribing to events for %s", node)
-        print("22Subscribing to ", node)
         self.window.eventDockWidget.raise_()
-        print("33Subscribing to ", node)
         try:
             self.window.subscribe_events(node, self._handler)
-            print("44Subscribing to ", node)
         except Exception as ex:
-            print("55Subscribing to ", node)
             self.window.show_error(ex)
             raise
         else:
             self._subscribed_nodes.append(node)
-            print("66Subscribing to ", node)
-        print("77Subscribing to ", node)
 
     @trycatchslot
     def _unsubscribe(self):
-        node = self.window.get_current_node()
-        if node is None:
-            return
-        print(' before  _subscribed_nodes  : ', self._subscribed_nodes)
-        self._subscribed_nodes.remove(node)
-        print(' before  _subscribed_nodes  : ', self._subscribed_nodes)
-        self.window.unsubscribe_events(node)
+        # node = self.window.get_current_node()
+        node = ''
+        if len(self._subscribed_nodes) > 0:
+            # self._subscribed_nodes.remove(node)
+            self._subscribed_nodes.clear()
+            self.window.unsubscribe_events(node)
 
     @trycatchslot
     def _update_event_model(self, event):
@@ -946,25 +948,28 @@ class MainWindow(QMainWindow):
         print(' unsubscribe_datachange2 -- _subs_datachange : ', self._subs_datachange)
 
     def subscribe_events(self, node, handler):
-        print(' subscribe_events1 -- _event_sub : ', self._event_sub)
         if not self._event_sub:
-            print("subscirbing with handler: ", handler, dir(handler))
             self._event_sub = self.client.create_subscription(500, handler)
-            print(' subscribe_events11 -- _event_sub : ', self._event_sub)
-        print(' subscribe_events12 -- _event_sub : ', self._event_sub)
         # 기본 이벤트 항목 호출
         # handle = self._event_sub.subscribe_events()
         # limit(setpoint) 와 ackedKnowledge 정보도 포함
         handle = self._event_sub.subscribe_events(evtypes=ua.ObjectIds.LimitAlarmType)
         self._subs_event[node.nodeid] = handle
-        print(' subscribe_events2 -- _event_sub : ', self._event_sub)
-        print(' subscribe_events2 -- _subs_event : ', self._subs_event)
+
+        print('Event Subscribed !!')
         return handle
 
     def unsubscribe_events(self, node):
-        self._event_sub.unsubscribe(self._subs_event[node.nodeid])
-        if node.nodeid in self._subs_event:
-            del self._subs_event[node.nodeid]
+
+        # node 별로 event subscribe 를 하는게 아니라서 대표로 하나만 처리함
+        # self._event_sub.unsubscribe(self._subs_event[node.nodeid])
+        # if node.nodeid in self._subs_event:
+        #     del self._subs_event[node.nodeid]
+
+        # 처음 한번만 입력하고 종료시 삭제함
+        self._event_sub.unsubscribe(list(self._subs_event.values())[0])
+        self._subs_event.clear()
+        print('Event UnSubscribed !!')
 
     def show_error(self, msg):
         logger.warning("showing error: %s")
