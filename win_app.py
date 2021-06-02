@@ -23,6 +23,7 @@ class DataChangeHandler(QObject):
     data_change_fired = pyqtSignal(object, str, str)
 
     def datachange_notification(self, node, val, data):
+        print(' datachange_notification start ', node, val, data.monitored_item.Value.Value)
         if data.monitored_item.Value.SourceTimestamp:
             data_ts = data.monitored_item.Value.SourceTimestamp.isoformat()
         elif data.monitored_item.Value.ServerTimestamp:
@@ -102,11 +103,14 @@ class DataChangeUI(object):
         if node is None:
             return
         self.window.unsubscribe_datachange(node)
+        print(' before  _subscribed_nodes  : ', self._subscribed_nodes)
         self._subscribed_nodes.remove(node)
+        print(' after   _subscribed_nodes  : ', self._subscribed_nodes)
         i = 0
         while self.model.item(i):
             item = self.model.item(i)
             if item.data() == node:
+                print(' Found : ', node)
                 self.model.removeRow(i)
             i += 1
 
@@ -126,6 +130,7 @@ class EventHandler(QObject):
     event_fired = pyqtSignal(object)
 
     def event_notification(self, event):
+        print(' event_notification start ', event)
         self.event_fired.emit(event)
 
 
@@ -168,6 +173,7 @@ class EventUI(object):
     @trycatchslot
     def _subscribe(self, node=None):
         logger.info("Subscribing to %s", node)
+        print("11Subscribing to ", node)
         if not node:
             node = self.window.get_current_node()
             if node is None:
@@ -176,22 +182,30 @@ class EventUI(object):
             logger.info("already subscribed to event for node: %s", node)
             return
         logger.info("Subscribing to events for %s", node)
+        print("22Subscribing to ", node)
         self.window.eventDockWidget.raise_()
+        print("33Subscribing to ", node)
         try:
-            self.uaclient.subscribe_events(node, self._handler)
+            self.window.subscribe_events(node, self._handler)
+            print("44Subscribing to ", node)
         except Exception as ex:
+            print("55Subscribing to ", node)
             self.window.show_error(ex)
             raise
         else:
             self._subscribed_nodes.append(node)
+            print("66Subscribing to ", node)
+        print("77Subscribing to ", node)
 
     @trycatchslot
     def _unsubscribe(self):
         node = self.window.get_current_node()
         if node is None:
             return
+        print(' before  _subscribed_nodes  : ', self._subscribed_nodes)
         self._subscribed_nodes.remove(node)
-        self.uaclient.unsubscribe_events(node)
+        print(' before  _subscribed_nodes  : ', self._subscribed_nodes)
+        self.window.unsubscribe_events(node)
 
     @trycatchslot
     def _update_event_model(self, event):
@@ -758,12 +772,14 @@ class MainWindow(QMainWindow):
         self.treeView.setFocus()
         self.treeView.expandToDepth(5)
 
-
         # print(self.treeView.currentIndex().row(), self.treeView.currentIndex().data())
         # print(self.treeView.currentIndex().child(0,0).data())
 
     def disconnect(self):
-        self.client.disconnect()
+        try:
+            self.client.disconnect()
+        finally:
+            self._reset()
 
     def _update_address_list(self, uri):
         if uri == self._address_list[0]:
@@ -917,22 +933,38 @@ class MainWindow(QMainWindow):
         if not self._datachange_sub:
             self._datachange_sub = self.client.create_subscription(500, handler)
         handle = self._datachange_sub.subscribe_data_change(node)
+        print(' subscription : ', self._datachange_sub, '  , handle : ', handle)
         self._subs_datachange[node.nodeid] = handle
+        print(' subscribe_datachange -- _subs_datachange : ', self._subs_datachange)
         return handle
 
     def unsubscribe_datachange(self, node):
+        print(' unsubscribe_datachange1 -- _subs_datachange : ', self._subs_datachange)
         self._datachange_sub.unsubscribe(self._subs_datachange[node.nodeid])
+        if node.nodeid in self._subs_datachange:
+            del self._subs_datachange[node.nodeid]
+        print(' unsubscribe_datachange2 -- _subs_datachange : ', self._subs_datachange)
 
     def subscribe_events(self, node, handler):
+        print(' subscribe_events1 -- _event_sub : ', self._event_sub)
         if not self._event_sub:
             print("subscirbing with handler: ", handler, dir(handler))
             self._event_sub = self.client.create_subscription(500, handler)
-        handle = self._event_sub.subscribe_events(node)
+            print(' subscribe_events11 -- _event_sub : ', self._event_sub)
+        print(' subscribe_events12 -- _event_sub : ', self._event_sub)
+        # 기본 이벤트 항목 호출
+        # handle = self._event_sub.subscribe_events()
+        # limit(setpoint) 와 ackedKnowledge 정보도 포함
+        handle = self._event_sub.subscribe_events(evtypes=ua.ObjectIds.LimitAlarmType)
         self._subs_event[node.nodeid] = handle
+        print(' subscribe_events2 -- _event_sub : ', self._event_sub)
+        print(' subscribe_events2 -- _subs_event : ', self._subs_event)
         return handle
 
     def unsubscribe_events(self, node):
-        self._event_sub.unsubscribe(self._subs_ev[node.nodeid])
+        self._event_sub.unsubscribe(self._subs_event[node.nodeid])
+        if node.nodeid in self._subs_event:
+            del self._subs_event[node.nodeid]
 
     def show_error(self, msg):
         logger.warning("showing error: %s")
