@@ -10,6 +10,7 @@ import opcua
 from opcua import Node
 from asyncua import ua
 from asyncua.sync import Client, SyncNode
+
 from asyncua.tools import endpoint_to_strings
 
 from uawidgets import *
@@ -23,7 +24,9 @@ class DataChangeHandler(QObject):
     data_change_fired = pyqtSignal(object, str, str)
 
     def datachange_notification(self, node, val, data):
-        print(' datachange_notification start ', node, val, data.monitored_item.Value.Value)
+        print(' datachange_notification start ', node, val, data.monitored_item.Value.Value, data.monitored_item.Value.SourceTimestamp)
+
+        print(data.monitored_item.Value.__class__.__name__)
         if data.monitored_item.Value.SourceTimestamp:
             data_ts = data.monitored_item.Value.SourceTimestamp.isoformat()
         elif data.monitored_item.Value.ServerTimestamp:
@@ -137,7 +140,12 @@ class EventHandler(QObject):
     event_fired = pyqtSignal(object)
 
     def event_notification(self, event):
-        print(' event_notification start ', event)
+        print(' event_notification start ', type(event), event)
+        print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
+              ' event node : ', ua.nodeid_from_binary(event.EventId),
+              ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text, ' ', event.Severity,
+              ' AckedState : ', event.AckedState.Text)
+
         self.event_fired.emit(event)
 
 
@@ -750,12 +758,33 @@ class MainWindow(QMainWindow):
 
         self.retrieve_tree()
 
+
     # Tree 항목들을 조회후 펼치기
     def retrieve_tree(self):
 
+        # DataTypeDefinition 샘플
+        # ###########################
+        # with opcua.Client("opc.tcp://192.168.1.3:4840") as client:
+        #     var = client.get_node("ns=5;i=5")
+        #     dt_id = var.get_data_type()
+        #     print(f"located datatype {dt_id} of node at {var}")
+        #     dt = client.get_node(dt_id)
+        #
+        #     dv = dt.get_attribute(opcua.ua.attribute_ids.AttributeIds.DataTypeDefinition)
+        #     buf = opcua.common.utils.Buffer(dv.Value.Value.Body)
+        #     opcua.ua.ua_binary.from_binary(opcua.ua.uaprotocol_auto.StructureDefinition, buf)
+
         root_node = self.client.nodes.root
-        # self.tree_ui.set_root_node(self.client.nodes.root)
+        self.tree_ui.set_root_node(self.client.nodes.root)
         # print('root_node_attr : ', type(root_node), self.get_node_attrs(root_node))
+
+
+        ua.uatypes.register_extension_object('DynamicDataType', 'ns=2;i=2002', 'ExtensionObject', 'ns=2;i=5001')
+        print(ua.uatypes.datatype_by_extension_object)
+        print(ua.uatypes.extension_objects_by_datatype)
+        self.client.DataTypeManger
+
+        print(ua.uatypes.get_extensionobject_class_type('DynamicDataType'))
 
         descs = root_node.get_children_descriptions()
         descs.sort(key=lambda x: x.BrowseName)
@@ -773,6 +802,8 @@ class MainWindow(QMainWindow):
         self.tree_ui.set_root_node(root_node)
         self.treeView.setFocus()
         self.treeView.expandToDepth(5)
+
+
 
         # print(self.treeView.currentIndex().row(), self.treeView.currentIndex().data())
         # print(self.treeView.currentIndex().child(0,0).data())
@@ -935,6 +966,9 @@ class MainWindow(QMainWindow):
         if not self._datachange_sub:
             self._datachange_sub = self.client.create_subscription(500, handler)
         handle = self._datachange_sub.subscribe_data_change(node)
+        print(' subscription browse : ')
+        # self._datachange_sub.browse('Value')
+
         print(' subscription : ', self._datachange_sub, '  , handle : ', handle)
         self._subs_datachange[node.nodeid] = handle
         print(' subscribe_datachange -- _subs_datachange : ', self._subs_datachange)
