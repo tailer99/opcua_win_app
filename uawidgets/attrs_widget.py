@@ -10,9 +10,6 @@ from PyQt5.QtWidgets import QApplication, QMenu, QAction, QStyledItemDelegate, Q
 from asyncua import ua
 from asyncua.sync import new_node
 from asyncua.common.ua_utils import string_to_val, val_to_string, data_type_to_string
-# from asyncua.ua.uatypes import type_string_from_type
-from asyncua.ua import uatypes
-
 
 from uawidgets.get_node_dialog import GetNodeButton
 from uawidgets.utils import trycatchslot
@@ -204,10 +201,10 @@ class AttrsWidget(QObject):
         self.model.appendRow([name_item, vitem, QStandardItem(dv.Value.VariantType.name)])
 
     def _show_value_attr(self, attr, dv):
+        # print(' _show_value_attr : ', attr, '   ', dv)
         name_item = QStandardItem("Value")
         vitem = QStandardItem()
-        items = self._show_val(name_item, None, "Value", dv.Value.Value, dv.Value.VariantType)
-        items[1].setData(AttributeData(attr, dv.Value.Value, dv.Value.VariantType), Qt.UserRole)
+        self._show_val(name_item, None, "Value", dv.Value.Value, dv.Value.VariantType)
         row = [name_item, vitem, QStandardItem(dv.Value.VariantType.name)]
         self.model.appendRow(row)
         self._show_timestamps(name_item, dv)
@@ -224,10 +221,10 @@ class AttrsWidget(QObject):
         vitem = QStandardItem()
         vitem.setText(val_to_string(val))
         vitem.setData(MemberData(obj, name, val, vtype), Qt.UserRole)
-        row = [name_item, vitem, QStandardItem(str(vtype))]
+        row = [name_item, vitem, QStandardItem(str(vtype.name))]
         # if we have a list or extension object we display children
         if isinstance(val, list):
-            row[2].setText("List of " + str(vtype))
+            row[2].setText("List of " + str(vtype.name))
             self._show_list(name_item, val, vtype)
         elif vtype == ua.VariantType.ExtensionObject:
             self._show_ext_obj(name_item, val)
@@ -258,21 +255,23 @@ class AttrsWidget(QObject):
         if val is None:
             self._show_val(item, val, "Value", None, ua.VariantType.Null)
             return
-        for field in fields(val):
-            member_val = getattr(val, field.name)
-            # att_type = type_string_from_type(field.type)
-            att_type = uatypes.datatype_by_extension_object(field.type)
+
+        for field in val.ua_types:
+            member_val = getattr(val, field[0])
+            att_type = field[1]
+
             if hasattr(ua.VariantType, att_type):
                 attr = getattr(ua.VariantType, att_type)
             elif hasattr(ua, att_type):
                 attr = getattr(ua, att_type)
+            elif att_type[:6] == 'ListOf':
+                attr = getattr(ua.VariantType, str(att_type[6:]))
             else:
-                return
-            self._show_val(item, val, field.name, member_val, attr)
+                attr = getattr(ua.VariantType, 'String')
+
+            self._show_val(item, val, field[0], member_val, attr)
 
     def _show_timestamps(self, item, dv):
-        #while item.hasChildren():
-            #self.model.removeRow(0, item.index())
         string = val_to_string(dv.ServerTimestamp)
         item.appendRow([QStandardItem("Server Timestamp"), QStandardItem(string), QStandardItem(ua.VariantType.DateTime.name)])
         string = val_to_string(dv.SourceTimestamp)
@@ -285,7 +284,7 @@ class AttrsWidget(QObject):
         for idx, dv in enumerate(dvs):
             if dv.StatusCode.is_good():
                 res.append((attrs[idx], dv))
-        res.sort(key=lambda x: x[0].name)
+        # res.sort(key=lambda x: x[0].name)
         return res
 
 

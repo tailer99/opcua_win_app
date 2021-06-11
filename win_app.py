@@ -24,9 +24,9 @@ class DataChangeHandler(QObject):
     data_change_fired = pyqtSignal(object, str, str)
 
     def datachange_notification(self, node, val, data):
-        print(' datachange_notification start ', node, val, data.monitored_item.Value.Value, data.monitored_item.Value.SourceTimestamp)
+        print(' datachange_notification start ', node, data.monitored_item.Value.Value, val, data.monitored_item.Value.SourceTimestamp)
 
-        print(data.monitored_item.Value.__class__.__name__)
+        # print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, ' --- ', val.Data)
         if data.monitored_item.Value.SourceTimestamp:
             data_ts = data.monitored_item.Value.SourceTimestamp.isoformat()
         elif data.monitored_item.Value.ServerTimestamp:
@@ -142,7 +142,6 @@ class EventHandler(QObject):
     def event_notification(self, event):
         print(' event_notification start ', type(event), event)
         print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
-              ' event node : ', ua.nodeid_from_binary(event.EventId),
               ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text, ' ', event.Severity,
               ' AckedState : ', event.AckedState.Text)
 
@@ -756,35 +755,17 @@ class MainWindow(QMainWindow):
 
         self._update_address_list(endpoint_url)
 
-        self.retrieve_tree()
+        # ExtensionObject 의 DynamicDataType 정의 불러오기
+        self.client.load_type_definitions()
 
+        self.retrieve_tree()
 
     # Tree 항목들을 조회후 펼치기
     def retrieve_tree(self):
 
-        # DataTypeDefinition 샘플
-        # ###########################
-        # with opcua.Client("opc.tcp://192.168.1.3:4840") as client:
-        #     var = client.get_node("ns=5;i=5")
-        #     dt_id = var.get_data_type()
-        #     print(f"located datatype {dt_id} of node at {var}")
-        #     dt = client.get_node(dt_id)
-        #
-        #     dv = dt.get_attribute(opcua.ua.attribute_ids.AttributeIds.DataTypeDefinition)
-        #     buf = opcua.common.utils.Buffer(dv.Value.Value.Body)
-        #     opcua.ua.ua_binary.from_binary(opcua.ua.uaprotocol_auto.StructureDefinition, buf)
-
         root_node = self.client.nodes.root
         self.tree_ui.set_root_node(self.client.nodes.root)
         # print('root_node_attr : ', type(root_node), self.get_node_attrs(root_node))
-
-
-        ua.uatypes.register_extension_object('DynamicDataType', 'ns=2;i=2002', 'ExtensionObject', 'ns=2;i=5001')
-        print(ua.uatypes.datatype_by_extension_object)
-        print(ua.uatypes.extension_objects_by_datatype)
-        self.client.DataTypeManger
-
-        print(ua.uatypes.get_extensionobject_class_type('DynamicDataType'))
 
         descs = root_node.get_children_descriptions()
         descs.sort(key=lambda x: x.BrowseName)
@@ -803,10 +784,6 @@ class MainWindow(QMainWindow):
         self.treeView.setFocus()
         self.treeView.expandToDepth(5)
 
-
-
-        # print(self.treeView.currentIndex().row(), self.treeView.currentIndex().data())
-        # print(self.treeView.currentIndex().child(0,0).data())
 
     def disconnect(self):
         try:
@@ -966,20 +943,14 @@ class MainWindow(QMainWindow):
         if not self._datachange_sub:
             self._datachange_sub = self.client.create_subscription(500, handler)
         handle = self._datachange_sub.subscribe_data_change(node)
-        print(' subscription browse : ')
-        # self._datachange_sub.browse('Value')
 
-        print(' subscription : ', self._datachange_sub, '  , handle : ', handle)
         self._subs_datachange[node.nodeid] = handle
-        print(' subscribe_datachange -- _subs_datachange : ', self._subs_datachange)
         return handle
 
     def unsubscribe_datachange(self, node):
-        print(' unsubscribe_datachange1 -- _subs_datachange : ', self._subs_datachange)
         self._datachange_sub.unsubscribe(self._subs_datachange[node.nodeid])
         if node.nodeid in self._subs_datachange:
             del self._subs_datachange[node.nodeid]
-        print(' unsubscribe_datachange2 -- _subs_datachange : ', self._subs_datachange)
 
     def subscribe_events(self, node, handler):
         if not self._event_sub:
@@ -1006,7 +977,7 @@ class MainWindow(QMainWindow):
         print('Event UnSubscribed !!')
 
     def show_error(self, msg):
-        logger.warning("showing error: %s")
+        logger.warning("showing error: %s", msg)
         self.statusBar.show()
         self.statusBar.setStyleSheet("QStatusBar { background-color : red; color : black; }")
         self.statusBar.showMessage(str(msg))
