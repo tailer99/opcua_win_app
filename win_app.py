@@ -17,14 +17,28 @@ from uawidgets import *
 from uawidgets import tree_widget, refs_widget, attrs_widget
 from uawidgets.utils import trycatchslot
 
+import pymysql
+
 logger = logging.getLogger(__name__)
 
 
 class DataChangeHandler(QObject):
     data_change_fired = pyqtSignal(object, str, str)
 
+    conn = pymysql.connect(host='10.178.59.59', port=3666, user='dacardev', password='dacardev!@#!@#',
+                           db='dacardev', charset='utf8')
+    cur_datachange = conn.cursor()
+
     def datachange_notification(self, node, val, data):
         print(' datachange_notification start ', node, data.monitored_item.Value.Value, val, data.monitored_item.Value.SourceTimestamp)
+
+        sql = "select * from TB_COMPANY"
+
+        self.cur_datachange.execute(sql)
+
+        # 데이타 Fetch
+        rows = self.cur_datachange.fetchall()
+        print('22222  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
 
         # print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, ' --- ', val.Data)
         if data.monitored_item.Value.SourceTimestamp:
@@ -139,6 +153,10 @@ class DataChangeUI(object):
 class EventHandler(QObject):
     event_fired = pyqtSignal(object)
 
+    conn = pymysql.connect(host='10.178.59.59', port=3666, user='dacardev', password='dacardev!@#!@#',
+                           db='dacardev', charset='utf8')
+    cur_event = conn.cursor()
+
     def event_notification(self, event):
         print(' event_notification start ', type(event), event)
         print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
@@ -146,6 +164,13 @@ class EventHandler(QObject):
               ' AckedState : ', event.AckedState.Text)
 
         self.event_fired.emit(event)
+        sql = "select * from TB_COMPANY"
+
+        self.cur_event.execute(sql)
+
+        # 데이타 Fetch
+        rows = self.cur_event.fetchall()
+        print('44444  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
 
 
 class EventUI(object):
@@ -682,6 +707,7 @@ class MainWindow(QMainWindow):
         self.certificate_path = None
         self.private_key_path = None
 
+        self.conn = None
         ##############################
 
     def _reset(self):
@@ -741,6 +767,20 @@ class MainWindow(QMainWindow):
         endpoint_url = self.addrComboBox.currentText()
         endpoint_url = endpoint_url.strip()
         try:
+
+            self.conn = pymysql.connect(host='10.178.59.59', port=3666, user='dacardev', password='dacardev!@#!@#',
+                                        db='dacardev', charset='utf8')
+
+            cur1 = self.conn.cursor()
+            # SQL문 실행
+            sql = "select * from TB_COMPANY"
+
+            cur1.execute(sql)
+
+            # 데이타 Fetch
+            rows = cur1.fetchall()
+            print('333  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
+
             self.client = Client(endpoint_url, timeout=2)
             self.client.connect()
 
@@ -962,6 +1002,19 @@ class MainWindow(QMainWindow):
         self._subs_event[node.nodeid] = handle
 
         print('Event Subscribed !!')
+
+
+        cur_subevent = self.conn.cursor()
+        # SQL문 실행
+        sql = "select * from TB_COMPANY"
+
+        cur_subevent.execute(sql)
+
+        # 데이타 Fetch
+        rows = cur_subevent.fetchall()
+        print('111  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
+
+
         return handle
 
     def unsubscribe_events(self, node):
