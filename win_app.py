@@ -22,33 +22,91 @@ import pymysql
 logger = logging.getLogger(__name__)
 
 
+class MysqlDBConn:
+
+    def __init__(self, dbServer):
+
+        # TODO dbServer = 'dev', 'prd', 'local'
+        #      ini 파일 읽기
+
+        hostIp = '10.178.59.59'
+        port = 3666
+        userNm = 'dacardev'
+        passWd = 'dacardev!@#!@#'
+        iniDbName = 'dacardev'
+        self.conn = pymysql.connect(host=hostIp, port=port, user=userNm, password=passWd,
+                                    db=iniDbName, charset='utf8mb4')
+
+
 class DataChangeHandler(QObject):
     data_change_fired = pyqtSignal(object, str, str)
+    inserted_data = {}
 
-    conn = pymysql.connect(host='10.178.59.59', port=3666, user='dacardev', password='dacardev!@#!@#',
-                           db='dacardev', charset='utf8')
-    cur_datachange = conn.cursor()
+    try:
+        conn = MysqlDBConn('dev').conn
+    except Exception as e:
+        print('DataChangeHandler : DB Conn Error -- ', e)
 
     def datachange_notification(self, node, val, data):
-        print(' datachange_notification start ', node, data.monitored_item.Value.Value, val, data.monitored_item.Value.SourceTimestamp)
+        # print(' datachange_notification start ', node, val, data.monitored_item.Value.SourceTimestamp)
+        print(' datachange_notification start ', node)
 
-        sql = "select * from TB_COMPANY"
-
-        self.cur_datachange.execute(sql)
-
-        # 데이타 Fetch
-        rows = self.cur_datachange.fetchall()
-        print('22222  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
-
-        # print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, ' --- ', val.Data)
         if data.monitored_item.Value.SourceTimestamp:
-            data_ts = data.monitored_item.Value.SourceTimestamp.isoformat()
+            data_ts = data.monitored_item.Value.SourceTimestamp.strftime('%Y-%m-%d %H:%M:%S')
         elif data.monitored_item.Value.ServerTimestamp:
-            data_ts = data.monitored_item.Value.ServerTimestamp.isoformat()
+            data_ts = data.monitored_item.Value.ServerTimestamp.isoformat().strftime('%Y-%m-%d %H:%M:%S')
         else:
-            data_ts = datetime.now().isoformat()
+            data_ts = datetime.now().isoformat().strftime('%Y-%m-%d %H:%M:%S')
         self.data_change_fired.emit(node, str(val), data_ts)
 
+        # TODO POINT, MESUREMENT 숫자로 변환하기
+
+        if isinstance(val, ua.DynamicDataType):
+            print('waveform')
+            print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples)
+
+        else:
+            print('trend', node, data)
+            # print('check: ', len(self.inserted_data))
+
+            with self.conn.cursor() as curs:
+                try:
+                    sql = 'select id from guid_to_key where guid = %s'
+                    curs.execute(sql, node)
+                    measurement_id = curs.fetchone()
+                    search_cnt = curs.rowcount
+
+                    if search_cnt == 0:
+                        sql = 'insert into guid_to_key(guid) values(%s)'
+                        curs.execute(sql, node)
+
+                        sql = 'select id from guid_to_key where guid = %s'
+                        curs.execute(sql, node)
+                        measurement_id = curs.fetchone()
+                        # print('rowcount : ', curs.rowcount)
+
+                    # print(datetime.now().minute, divmod(datetime.now().minute, 2), divmod(datetime.now().minute, 2)[1])
+                    # 2분에 1번 쓰기
+                    if divmod(datetime.now().minute, 2)[1] == 0:
+                        write_yn = True
+                    else:
+                        write_yn = False
+
+                    if write_yn and str(node.nodeid) not in self.inserted_data:
+                        sql = "insert into SDA_TREND(SYS1_ID, COMPANY_ID, CRT_MONTH, POINT_ID, MEASUREMENT_ID, " \
+                              "AGGR_TIME_CD, TS, VAL, VAL_TYPE, CREATE_TS) " \
+                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                        record = ('03', 1, 6, 11, measurement_id[0], '2M', data_ts, round(val, 3), 2)
+                        curs.execute(sql, record)
+                        self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
+                        print('aaa', self.inserted_data)
+                    elif divmod(datetime.now().minute, 2)[1] == 1:
+                        self.inserted_data.clear()
+
+                except Exception as e:
+                    print('TREND DATA INSERT error occured : ', e)
+
+        self.conn.commit()
 
 class DataChangeUI(object):
 
@@ -153,9 +211,11 @@ class DataChangeUI(object):
 class EventHandler(QObject):
     event_fired = pyqtSignal(object)
 
-    conn = pymysql.connect(host='10.178.59.59', port=3666, user='dacardev', password='dacardev!@#!@#',
-                           db='dacardev', charset='utf8')
-    cur_event = conn.cursor()
+    try:
+        conn = MysqlDBConn('dev').conn
+        print('1conn event :', conn)
+    except Exception as e:
+        print('EventHandler : DB Conn Error -- ', e)
 
     def event_notification(self, event):
         print(' event_notification start ', type(event), event)
@@ -164,13 +224,9 @@ class EventHandler(QObject):
               ' AckedState : ', event.AckedState.Text)
 
         self.event_fired.emit(event)
-        sql = "select * from TB_COMPANY"
 
-        self.cur_event.execute(sql)
-
-        # 데이타 Fetch
-        rows = self.cur_event.fetchall()
-        print('44444  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
+    if conn is not None:
+        conn.close()
 
 
 class EventUI(object):
@@ -767,20 +823,6 @@ class MainWindow(QMainWindow):
         endpoint_url = self.addrComboBox.currentText()
         endpoint_url = endpoint_url.strip()
         try:
-
-            self.conn = pymysql.connect(host='10.178.59.59', port=3666, user='dacardev', password='dacardev!@#!@#',
-                                        db='dacardev', charset='utf8')
-
-            cur1 = self.conn.cursor()
-            # SQL문 실행
-            sql = "select * from TB_COMPANY"
-
-            cur1.execute(sql)
-
-            # 데이타 Fetch
-            rows = cur1.fetchall()
-            print('333  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
-
             self.client = Client(endpoint_url, timeout=2)
             self.client.connect()
 
@@ -823,7 +865,6 @@ class MainWindow(QMainWindow):
         self.tree_ui.set_root_node(root_node)
         self.treeView.setFocus()
         self.treeView.expandToDepth(5)
-
 
     def disconnect(self):
         try:
@@ -1002,19 +1043,6 @@ class MainWindow(QMainWindow):
         self._subs_event[node.nodeid] = handle
 
         print('Event Subscribed !!')
-
-
-        cur_subevent = self.conn.cursor()
-        # SQL문 실행
-        sql = "select * from TB_COMPANY"
-
-        cur_subevent.execute(sql)
-
-        # 데이타 Fetch
-        rows = cur_subevent.fetchall()
-        print('111  ', rows[0])  # 첫번째 row: (1, '김정수', 1, '서울')
-
-
         return handle
 
     def unsubscribe_events(self, node):
@@ -1044,7 +1072,7 @@ if __name__ == '__main__':
     window = MainWindow()
     window.setGeometry(10, 10, 1200, 800)
 
-    window.show()
-    # window.showFullScreen()
+    # window.show()
+    window.showFullScreen()
 
     sys.exit(app.exec_())
