@@ -1,23 +1,20 @@
 import sys
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import math
 
 from PyQt5.QtGui import QStandardItem, QIcon, QStandardItemModel
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5 import QtCore, QtGui, QtWidgets
-import opcua
-from opcua import Node
-from asyncua import ua
+from asyncua import ua, common
 from asyncua.sync import Client, SyncNode
 
-from asyncua.tools import endpoint_to_strings
-
-from uawidgets import *
 from uawidgets import tree_widget, refs_widget, attrs_widget
 from uawidgets.utils import trycatchslot
 
 import pymysql
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +22,6 @@ logger = logging.getLogger(__name__)
 class MysqlDBConn:
 
     def __init__(self, dbServer):
-
         # TODO dbServer = 'dev', 'prd', 'local'
         #      ini 파일 읽기
 
@@ -41,6 +37,8 @@ class MysqlDBConn:
 class DataChangeHandler(QObject):
     data_change_fired = pyqtSignal(object, str, str)
     inserted_data = {}
+    cur_update_time = datetime.now()
+    last_update_time = datetime.now()
 
     try:
         conn = MysqlDBConn('dev').conn
@@ -50,6 +48,9 @@ class DataChangeHandler(QObject):
     def datachange_notification(self, node, val, data):
         # print(' datachange_notification start ', node, val, data.monitored_item.Value.SourceTimestamp)
         print(' datachange_notification start ', node)
+
+        # DB 연결 여부 확인
+        self.conn.ping(True)
 
         if data.monitored_item.Value.SourceTimestamp:
             data_ts = data.monitored_item.Value.SourceTimestamp.strftime('%Y-%m-%d %H:%M:%S')
@@ -63,10 +64,49 @@ class DataChangeHandler(QObject):
 
         if isinstance(val, ua.DynamicDataType):
             print('waveform')
-            print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples)
+            # print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, val)
+
+            with self.conn.cursor() as curs:
+                try:
+                    sql = 'select id from guid_to_key where guid = %s'
+                    curs.execute(sql, node)
+                    measurement_id = curs.fetchone()
+                    search_cnt = curs.rowcount
+
+                    if search_cnt == 0:
+                        sql = 'insert into guid_to_key(guid) values(%s)'
+                        curs.execute(sql, node)
+
+                        sql = 'select id from guid_to_key where guid = %s'
+                        curs.execute(sql, node)
+                        measurement_id = curs.fetchone()
+                        # print('rowcount : ', curs.rowcount)
+
+                    crt_wk = int(datetime.now().strftime('%W'))
+                    sys1_id = '03'
+                    company_id = 6
+                    point_id = 11
+
+                    sql = "insert into SDA_WAVEFORM(CRT_WK, SYS1_ID, COMPANY_ID, POINT_ID, MEASUREMENT_ID, " \
+                          "UTC_TIME_STAMP, NO_OF_DATA, C_DATA, UNIT_NAME, SUB_UNIT_NAME, RPM," \
+                          "FMAX, FMAX_UNIT_NAME, SAMPLING_PERIOD, SAMPLING_PERIOD_UNIT_NAME, CREATE_DT) " \
+                          "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                    record = (crt_wk, sys1_id, company_id, point_id, measurement_id[0],
+                              val.UTCTimestamp.strftime('%Y-%m-%d %H:%M:%S'), val.NumberOfSamples, str(val.Data),
+                              val.UnitName, val.SubunitName, int(val.RPM),
+                              val.Fmax, val.FmaxUnitName, round(val.SamplingPeriod, 18), val.SamplingPeriodUnitName)
+                    # print('input data :', record)
+
+                    curs.execute(sql, record)
+                    print('insert ok', datetime.now())
+                    self.conn.commit()
+
+
+                except Exception as e:
+                    print('WAVEFORM DATA INSERT error occured : ', e, sql)
 
         else:
-            print('trend', node, data)
+            # print('trend', node, data)
             # print('check: ', len(self.inserted_data))
 
             with self.conn.cursor() as curs:
@@ -85,28 +125,32 @@ class DataChangeHandler(QObject):
                         measurement_id = curs.fetchone()
                         # print('rowcount : ', curs.rowcount)
 
-                    # print(datetime.now().minute, divmod(datetime.now().minute, 2), divmod(datetime.now().minute, 2)[1])
+                    self.cur_update_time = datetime.now()
                     # 2분에 1번 쓰기
-                    if divmod(datetime.now().minute, 2)[1] == 0:
+                    # 입력시간 조건 비교하여 변수값 셋
+                    if self.cur_update_time - self.last_update_time >= timedelta(seconds=120):
                         write_yn = True
                     else:
                         write_yn = False
 
+                    # 입력시간 조건이 되었는지와 입력된 건인지 비교하여 데이터 INSERT 수행
                     if write_yn and str(node.nodeid) not in self.inserted_data:
                         sql = "insert into SDA_TREND(SYS1_ID, COMPANY_ID, CRT_MONTH, POINT_ID, MEASUREMENT_ID, " \
-                              "AGGR_TIME_CD, TS, VAL, VAL_TYPE, CREATE_TS) " \
+                              "AGGR_TIME_CD, SOURCE_DT, VAL, VAL_TYPE, CREATE_DT) " \
                               "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
                         record = ('03', 1, 6, 11, measurement_id[0], '2M', data_ts, round(val, 3), 2)
                         curs.execute(sql, record)
                         self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
-                        print('aaa', self.inserted_data)
-                    elif divmod(datetime.now().minute, 2)[1] == 1:
+
+                    elif self.cur_update_time - self.last_update_time >= timedelta(seconds=120):
                         self.inserted_data.clear()
+                        self.last_update_time = self.cur_update_time
+
+                    self.conn.commit()
 
                 except Exception as e:
                     print('TREND DATA INSERT error occured : ', e)
 
-        self.conn.commit()
 
 class DataChangeUI(object):
 
@@ -213,20 +257,186 @@ class EventHandler(QObject):
 
     try:
         conn = MysqlDBConn('dev').conn
-        print('1conn event :', conn)
+        print('conn event :', conn)
     except Exception as e:
         print('EventHandler : DB Conn Error -- ', e)
+
+    def status_change_notification(self, status):
+        print(' status_change_notification start ', type(status), status)
 
     def event_notification(self, event):
         print(' event_notification start ', type(event), event)
         print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
-              ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text, ' ', event.Severity,
+              ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text, ' ',
+              event.ActiveState.Text,
               ' AckedState : ', event.AckedState.Text)
 
-        self.event_fired.emit(event)
+        if event.AckedState.Text == 'Acknowledged':
+            # pass
 
-    if conn is not None:
-        conn.close()
+            print('acked')
+            # DB 연결 여부 확인
+            self.conn.ping(True)
+
+            with self.conn.cursor() as curs:
+                try:
+                    # TODO system1 변수값 셋팅
+                    sys1_id = '03'
+
+                    event_id = base64.b64encode(event.EventId)
+
+                    # TODO point_id, measurement_id 를 tree 구조에서 데이터 가져오도록 수정해야 함
+                    sql = 'select id from guid_to_key where guid = %s'
+                    curs.execute(sql, event.SourceNode)
+                    measurement_temp = curs.fetchone()
+                    search_cnt = curs.rowcount
+
+                    if search_cnt == 0:
+                        sql = 'insert into guid_to_key(guid) values(%s)'
+                        curs.execute(sql, event.SourceNode)
+
+                        sql = 'select id from guid_to_key where guid = %s'
+                        curs.execute(sql, event.SourceNode)
+                        measurement_temp = curs.fetchone()
+                        # print('rowcount : ', curs.rowcount)
+
+                    point_id = 0
+                    measurement_id = measurement_temp[0]
+
+                    alarm_level = event.ConditionName[-1]
+
+                    if event.ActiveState.Text == 'Active':
+                        entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                        left_dt = ''
+                        is_active = 1
+                    elif event.ActiveState.Text == 'Inactive':
+                        entered_dt = ''
+                        left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                        is_active = 0
+                    else:
+                        entered_dt = ''
+                        left_dt = ''
+                        is_active = 2
+
+                    measurement = event.SourceName[event.SourceName.rfind('>') + 1:]
+                    machine_temp = event.SourceName[:event.SourceName.rfind('>')]
+                    point = machine_temp[machine_temp.rfind('>') + 1:]
+                    machine = machine_temp[:machine_temp.rfind('>')]
+
+                    # TODO 값 찾기
+                    #      System1NonExclusiveLevelAlarmType 에 값이 있으나 조회가 안됨.
+                    trigger_value = 0
+
+                    server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
+
+                    # 알람이 발생했을 때는 INSERT
+                    if is_active == 1:
+                        sql = "insert into SDA_EVENT(SYS1_ID, EVENT_ID, POINT_ID, MEASUREMENT_ID, " \
+                              "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
+                              "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
+                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                        record = (
+                        sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
+                        machine, point, measurement, trigger_value, server_time_stamp, 'N', 'Edge')
+                    # 알람이 종료되었을 때는 UPDATE
+                    else:
+                        sql = "update SDA_EVENT " \
+                              "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
+                              "       UPDATE_ID = 'Edge', UPDATE_DT = NOW() " \
+                              "where  SYS1_ID = %s " \
+                              "and    EVENT_ID = %s "
+                        record = (left_dt, is_active, sys1_id, event_id)
+
+                    print(sql, '    ', record)
+                    curs.execute(sql, record)
+
+                    self.conn.commit()
+
+                except Exception as e:
+                    print('EVENT DATA INSERT error occurred : ', e)
+
+        else:
+            print('un acked')
+            # DB 연결 여부 확인
+            self.conn.ping(True)
+
+            with self.conn.cursor() as curs:
+                try:
+                    # TODO system1 변수값 셋팅
+                    sys1_id = '03'
+
+                    event_id = base64.b64encode(event.EventId)
+
+                    # TODO point_id, measurement_id 를 tree 구조에서 데이터 가져오도록 수정해야 함
+                    sql = 'select id from guid_to_key where guid = %s'
+                    curs.execute(sql, event.SourceNode)
+                    measurement_temp = curs.fetchone()
+                    search_cnt = curs.rowcount
+
+                    if search_cnt == 0:
+                        sql = 'insert into guid_to_key(guid) values(%s)'
+                        curs.execute(sql, event.SourceNode)
+
+                        sql = 'select id from guid_to_key where guid = %s'
+                        curs.execute(sql, event.SourceNode)
+                        measurement_temp = curs.fetchone()
+                        # print('rowcount : ', curs.rowcount)
+
+                    point_id = 0
+                    measurement_id = measurement_temp[0]
+
+                    alarm_level = event.ConditionName[-1]
+
+                    if event.ActiveState.Text == 'Active':
+                        entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                        left_dt = ''
+                        is_active = 1
+                    elif event.ActiveState.Text == 'Inactive':
+                        entered_dt = ''
+                        left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                        is_active = 0
+                    else:
+                        entered_dt = ''
+                        left_dt = ''
+                        is_active = 2
+
+                    measurement = event.SourceName[event.SourceName.rfind('>') + 1:]
+                    machine_temp = event.SourceName[:event.SourceName.rfind('>')]
+                    point = machine_temp[machine_temp.rfind('>') + 1:]
+                    machine = machine_temp[:machine_temp.rfind('>')]
+
+                    # TODO 값 찾기
+                    #      System1NonExclusiveLevelAlarmType 에 값이 있으나 조회가 안됨.
+                    trigger_value = 0
+
+                    server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
+
+                    # 알람이 발생했을 때는 INSERT
+                    if is_active == 1:
+                        sql = "insert into SDA_EVENT(SYS1_ID, EVENT_ID, POINT_ID, MEASUREMENT_ID, " \
+                              "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
+                              "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
+                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                        record = (sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
+                                  machine, point, measurement, trigger_value, server_time_stamp, 'N', 'Edge')
+                    # 알람이 종료되었을 때는 UPDATE
+                    else:
+                        sql = "update SDA_EVENT " \
+                              "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
+                              "       UPDATE_ID = 'Edge', UPDATE_DT = NOW() " \
+                              "where  SYS1_ID = %s " \
+                              "and    EVENT_ID = %s "
+                        record = (left_dt, is_active, sys1_id, event_id)
+
+                    print(sql, '    ', record)
+                    curs.execute(sql, record)
+
+                    self.conn.commit()
+
+                except Exception as e:
+                    print('EVENT DATA INSERT error occurred : ', e)
+
+            self.event_fired.emit(event)
 
 
 class EventUI(object):
@@ -701,7 +911,8 @@ class MainWindow(QMainWindow):
         QCoreApplication.setApplicationName("OpcUaClient")
         self.settings = QSettings()
 
-        self._address_list = self.settings.value("address_list", ["opc.tcp://10.178.59.49:7560/", "opc.tcp://localhost:4840", ])
+        self._address_list = self.settings.value("address_list",
+                                                 ["opc.tcp://10.178.59.49:7560/", "opc.tcp://localhost:4840", ])
         self._address_list_max_count = int(self.settings.value("address_list_max_count", 5))
 
         # init widgets
@@ -744,7 +955,8 @@ class MainWindow(QMainWindow):
 
         # TODO 동작 안함
         # print(int(self.settings.value("main_window_width", 1000)), int(self.settings.value("main_window_height", 800)))
-        self.resize(int(self.settings.value("main_window_width", 1000)), int(self.settings.value("main_window_height", 800)))
+        self.resize(int(self.settings.value("main_window_width", 1000)),
+                    int(self.settings.value("main_window_height", 800)))
         data = self.settings.value("main_window_state", None)
         if data:
             self.restoreState(data)
@@ -796,9 +1008,11 @@ class MainWindow(QMainWindow):
         self.actionDisconnect.setText(_translate("MainWindow", "&Disconnect"))
         self.actionDisconnect.setToolTip(_translate("MainWindow", "Disconnect from server"))
         self.actionSubscribeDataChange.setText(_translate("MainWindow", "&Subscribe to data change"))
-        self.actionSubscribeDataChange.setToolTip(_translate("MainWindow", "Subscribe to data change from selected node"))
+        self.actionSubscribeDataChange.setToolTip(
+            _translate("MainWindow", "Subscribe to data change from selected node"))
         self.actionUnsubscribeDataChange.setText(_translate("MainWindow", "&Unsubscribe to DataChange"))
-        self.actionUnsubscribeDataChange.setToolTip(_translate("MainWindow", "Unsubscribe to DataChange for current node"))
+        self.actionUnsubscribeDataChange.setToolTip(
+            _translate("MainWindow", "Unsubscribe to DataChange for current node"))
         self.actionSubscribeEvent.setText(_translate("MainWindow", "Subscribe to &events"))
         self.actionSubscribeEvent.setToolTip(_translate("MainWindow", "Subscribe to events from selected node"))
         self.actionUnsubscribeEvents.setText(_translate("MainWindow", "U&nsubscribe to Events"))
@@ -839,6 +1053,7 @@ class MainWindow(QMainWindow):
 
         # ExtensionObject 의 DynamicDataType 정의 불러오기
         self.client.load_type_definitions()
+        self.client.load_enums()
 
         self.retrieve_tree()
 
@@ -901,7 +1116,7 @@ class MainWindow(QMainWindow):
         root_node_id = self.client.nodes.root
         print('a ', root_node_id, type(root_node_id))
 
-        #nodeid = ua.NodeId.from_string(uri)
+        # nodeid = ua.NodeId.from_string(uri)
         # nodeid = 'i=84' Root
         node = self.get_child_node(str(root_node_id))
         print('node : ', node)
@@ -1036,13 +1251,33 @@ class MainWindow(QMainWindow):
     def subscribe_events(self, node, handler):
         if not self._event_sub:
             self._event_sub = self.client.create_subscription(500, handler)
+
+        # myevent = root_node.get_child(["0:Types", "0:EventTypes", "0:BaseEventType", "0:ConditionType"])
+        # myevent = self.client.nodes.root.get_child(["0:Types", "0:EventTypes", "0:BaseEventType", "0:ConditionType",
+        #                                "0:AcknowledgeableConditionType", "0:AlarmConditionType", "0:LimitAlarmType",
+        #                                "0:NonExclusiveLimitAlarmType", "0:NonExclusiveLevelAlarmType",
+        #                                # "2:System1NonExclusiveLevelAlarmType",
+        #                                             ])
+
+        # print(' myevent :', myevent, type(myevent))
+        # print(' get_variables : ', myevent.get_variables())
+        # print(' get_properties : ', myevent.get_properties())
+
         # 기본 이벤트 항목 호출
         # handle = self._event_sub.subscribe_events()
-        # limit(setpoint) 와 ackedKnowledge 정보도 포함
-        handle = self._event_sub.subscribe_events(evtypes=ua.ObjectIds.LimitAlarmType)
-        self._subs_event[node.nodeid] = handle
+        evtypes = [ua.ObjectIds.RefreshRequiredEventType, ua.ObjectIds.RefreshStartEventType,
+                   ua.ObjectIds.LimitAlarmType, ua.ObjectIds.NonExclusiveLevelAlarmType]
+        # evtypes = [myevent.nodeid.Identifier]
+        handle = self._event_sub.subscribe_events(evtypes=evtypes)
+        # select_event_attributes_from_type_node
+        # subscribe_alarms_and_conditions
+        # self._event_sub._create_eventfilter('System1NonExclusiveLevelAlarmType')
 
-        print('Event Subscribed !!')
+        # 해당 항목이나 이건 실행시 오류가 남
+        # handle = self._event_sub.subscribe_events(evtypes=ua.ObjectIds.System1NonExclusiveLevelAlarmType)
+        print('check :: ', type(self._event_sub))
+        self._subs_event[node.nodeid] = handle
+        print('MainWindow Event Subscribed !!')
         return handle
 
     def unsubscribe_events(self, node):
@@ -1067,7 +1302,6 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
-
     app = QApplication(sys.argv)
     window = MainWindow()
     window.setGeometry(10, 10, 1200, 800)
