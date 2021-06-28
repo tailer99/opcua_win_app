@@ -515,7 +515,7 @@ class EventUI(object):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setGeometry(100, 200, 300, 200)
+        self.setGeometry(100, 300, 300, 200)
         self.setWindowTitle("OPC UA Trans")
 
         self.setObjectName("MainWindow")
@@ -617,7 +617,6 @@ class MainWindow(QMainWindow):
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.attrDockWidget.sizePolicy().hasHeightForWidth())
         self.attrDockWidget.setSizePolicy(sizePolicy)
-        # self.attrDockWidget.setMinimumSize(QtCore.QSize(400, 170))
         self.attrDockWidget.setMinimumSize(QtCore.QSize(500, 300))
 
         self.attrDockWidgetContents = QtWidgets.QWidget()
@@ -625,7 +624,7 @@ class MainWindow(QMainWindow):
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.attrDockWidgetContents.sizePolicy().hasHeightForWidth())
+        # sizePolicy.setHeightForWidth(self.attrDockWidgetContents.sizePolicy().hasHeightForWidth())
         self.attrDockWidgetContents.setSizePolicy(sizePolicy)
         self.attrDockWidgetContents.setMinimumSize(QtCore.QSize(100, 0))
 
@@ -770,58 +769,6 @@ class MainWindow(QMainWindow):
         self.logDockWidget.setWidget(self.logDockWidgetContents)
         self.addDockWidget(QtCore.Qt.DockWidgetArea(8), self.logDockWidget)
 
-        #######################
-
-        self.graphDockWidget = QtWidgets.QDockWidget(self)
-        self.graphDockWidget.setObjectName("graphDockWidget")
-
-        self.graphDockWidgetContents = QtWidgets.QWidget()
-        self.graphDockWidgetContents.setObjectName("graphDockWidgetContents")
-
-        self.gridGraphLayout = QtWidgets.QGridLayout(self.graphDockWidgetContents)
-        self.gridGraphLayout.setObjectName("gridGraphLayout")
-        self.gridGraphLayout.setContentsMargins(11, 11, 11, 11)
-        self.gridGraphLayout.setSpacing(6)
-
-        self.graphLayout = QtWidgets.QVBoxLayout()
-        self.graphLayout.setObjectName("graphLayout")
-        self.graphLayout.setSpacing(6)
-
-        self.horizontalLayout = QtWidgets.QHBoxLayout()
-        self.horizontalLayout.setObjectName("horizontalLayout")
-        self.horizontalLayout.setSpacing(6)
-
-        self.labelNumberOfPoints = QtWidgets.QLabel(self.graphDockWidgetContents)
-        self.labelNumberOfPoints.setObjectName("labelNumberOfPoints")
-        self.horizontalLayout.addWidget(self.labelNumberOfPoints)
-
-        self.spinBoxNumberOfPoints = QtWidgets.QSpinBox(self.graphDockWidgetContents)
-        self.spinBoxNumberOfPoints.setObjectName("spinBoxNumberOfPoints")
-        self.spinBoxNumberOfPoints.setMinimum(10)
-        self.spinBoxNumberOfPoints.setMaximum(100)
-        self.spinBoxNumberOfPoints.setProperty("value", 30)
-        self.horizontalLayout.addWidget(self.spinBoxNumberOfPoints)
-
-        self.labelInterval = QtWidgets.QLabel(self.graphDockWidgetContents)
-        self.labelInterval.setObjectName("labelInterval")
-        self.horizontalLayout.addWidget(self.labelInterval)
-
-        self.spinBoxInterval = QtWidgets.QSpinBox(self.graphDockWidgetContents)
-        self.spinBoxInterval.setObjectName("spinBoxInterval")
-        self.spinBoxInterval.setMinimum(1)
-        self.spinBoxInterval.setMaximum(3600)
-        self.spinBoxInterval.setProperty("value", 5)
-        self.horizontalLayout.addWidget(self.spinBoxInterval)
-
-        self.buttonApply = QtWidgets.QPushButton(self.graphDockWidgetContents)
-        self.buttonApply.setObjectName("buttonApply")
-        self.horizontalLayout.addWidget(self.buttonApply)
-        self.graphLayout.addLayout(self.horizontalLayout)
-        self.gridGraphLayout.addLayout(self.graphLayout, 0, 0, 1, 1)
-
-        self.graphDockWidget.setWidget(self.graphDockWidgetContents)
-        self.addDockWidget(QtCore.Qt.DockWidgetArea(2), self.graphDockWidget)
-
         ########################
         #############################
 
@@ -882,26 +829,10 @@ class MainWindow(QMainWindow):
 
         ###########################################
 
-        # w = QWidget()
-        # self.addrDockWidget.setTitleBarWidget(w)
-
         # tabify some docks
         self.tabifyDockWidget(self.attrDockWidget, self.eventDockWidget)
+        self.tabifyDockWidget(self.refDockWidget, self.subDockWidget)
 
-        # self.tabifyDockWidget(self.eventDockWidget, self.subDockWidget)
-        self.tabifyDockWidget(self.subDockWidget, self.refDockWidget)
-        self.tabifyDockWidget(self.refDockWidget, self.graphDockWidget)
-
-        # self.treePoint = QTreeWidget(self)
-        # self.treePoint.setGeometry(10, 30, 600, 500)
-
-        # self.btnConnect = QPushButton("Connect", self)
-        # self.btnConnect.move(1200, 100)
-        # self.btnConnect.clicked.connect(self.connect)
-        #
-        # self.btnSearch = QPushButton("Search", self)
-        # self.btnSearch.move(1200, 150)
-        # self.btnSearch.clicked.connect(self.search_node)
 
         #############################
         #############################
@@ -999,10 +930,6 @@ class MainWindow(QMainWindow):
         self.subDockWidget.setWindowTitle(_translate("MainWindow", "S&ubscriptions"))
         self.refDockWidget.setWindowTitle(_translate("MainWindow", "&References"))
         self.eventDockWidget.setWindowTitle(_translate("MainWindow", "&Events"))
-        self.graphDockWidget.setWindowTitle(_translate("MainWindow", "&Graph"))
-        self.labelNumberOfPoints.setText(_translate("MainWindow", "Number of Points"))
-        self.labelInterval.setText(_translate("MainWindow", "Intervall [s]"))
-        self.buttonApply.setText(_translate("MainWindow", "Apply"))
 
         self.actionConnect.setText(_translate("MainWindow", "&Connect"))
         self.actionDisconnect.setText(_translate("MainWindow", "&Disconnect"))
@@ -1306,7 +1233,7 @@ if __name__ == '__main__':
     window = MainWindow()
     window.setGeometry(10, 10, 1200, 800)
 
-    # window.show()
-    window.showFullScreen()
+    window.show()
+    #window.showFullScreen()
 
     sys.exit(app.exec_())
