@@ -13,6 +13,7 @@ from asyncua.sync import Client, SyncNode
 from uawidgets import tree_widget, refs_widget, attrs_widget
 from uawidgets.utils import trycatchslot
 
+
 import pymysql
 import base64
 
@@ -64,7 +65,7 @@ class DataChangeHandler(QObject):
 
         if isinstance(val, ua.DynamicDataType):
             print('waveform')
-            # print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, val)
+            print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, val)
 
             with self.conn.cursor() as curs:
                 try:
@@ -100,7 +101,6 @@ class DataChangeHandler(QObject):
                     curs.execute(sql, record)
                     print('insert ok', datetime.now())
                     self.conn.commit()
-
 
                 except Exception as e:
                     print('WAVEFORM DATA INSERT error occured : ', e, sql)
@@ -161,7 +161,7 @@ class DataChangeUI(object):
         self._subscribed_nodes = []
         self.model = QStandardItemModel()
         self.window.subView.setModel(self.model)
-        self.window.subView.horizontalHeader().setSectionResizeMode(1)
+        # self.window.subView.horizontalHeader().setSectionResizeMode(1)
 
         self.window.actionSubscribeDataChange.triggered.connect(self._subscribe)
         self.window.actionUnsubscribeDataChange.triggered.connect(self._unsubscribe)
@@ -907,6 +907,8 @@ class MainWindow(QMainWindow):
         self.private_key_path = None
 
         self.conn = None
+        self.treeList = list()
+        self.level = 0
         ##############################
 
     def _reset(self):
@@ -980,7 +982,7 @@ class MainWindow(QMainWindow):
 
         # ExtensionObject 의 DynamicDataType 정의 불러오기
         self.client.load_type_definitions()
-        self.client.load_enums()
+        # self.client.load_enums()
 
         self.retrieve_tree()
 
@@ -992,21 +994,120 @@ class MainWindow(QMainWindow):
         # print('root_node_attr : ', type(root_node), self.get_node_attrs(root_node))
 
         descs = root_node.get_children_descriptions()
+        # print('descs : ', descs)
         descs.sort(key=lambda x: x.BrowseName)
         for node in descs:
             if node.DisplayName.Text == "Objects":
                 # print(type(node), type(node.NodeId), node.NodeId)
                 c_descs = self.client.get_node(node.NodeId).get_children_descriptions()
-                # print(c_descs)
+                # print('c_descs : ', c_descs)
                 for c_node in c_descs:
                     if c_node.DisplayName.Text == "Server":
                         pass
                     else:
                         root_node = self.client.get_node(c_node.NodeId)
-        # print(' root_node : ', root_node)
+
+                        # tree 에 저장할 값 설정
+                        guid2 = c_node.NodeId.Identifier
+                        icon_grp = str(c_node.NodeClass).split('.')[1]
+                        d_name = c_node.DisplayName.Text
+                        item_type = ua.object_ids.ObjectIdNames[c_node.TypeDefinition.Identifier]
+                        print(type(c_node), guid2, icon_grp, d_name, self.level, 0, '', item_type)
+                        self.treeList.append([guid2, icon_grp, d_name, self.level, 0, '', item_type])
+
         self.tree_ui.set_root_node(root_node)
         self.treeView.setFocus()
-        self.treeView.expandToDepth(5)
+        self.treeView.expandToDepth(0)
+
+        child_node = root_node.get_children_descriptions()
+        print('ROOT CHILD desc : ', child_node[0], ' ,,,,, ', child_node[1])
+        if 'Devices' in child_node[0].DisplayName.Text:
+            gubun = 'D'
+        else:
+            gubun = 'M'
+        self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1)
+        #
+        # if 'Devices' in child_node[1].DisplayName.Text:
+        #     gubun = 'D'
+        # else:
+        #     gubun = 'M'
+        # self.get_child_node2(child_node[1].NodeId, gubun)
+
+        # guid2 = ch1[0].NodeId.Identifier
+        # icon_grp = str(ch1[0].NodeClass).split('.')[1]
+        # d_name = ch1[0].DisplayName.Text
+
+        # BaseObjectType(object), AnalogItemType(trend), BaseDataVariableType(waveform), PropertyType
+        # item_type = ua.object_ids.ObjectIdNames[ch1[0].TypeDefinition.Identifier]
+
+        return
+
+        # print(ch1[0].NodeId.Identifier, ch1[0].DisplayName.Text, str(ch1[0].NodeClass).split('.')[1], ua.object_ids.ObjectIdNames[ch1[0].TypeDefinition.Identifier])
+        # print(guid2, icon_grp, d_name, self.level, 'array_index', gubun)
+        # self.treeList.append([guid2, icon_grp, d_name, self.level, 'array_index', gubun])
+        print('treeList :', self.treeList)
+
+        child_node = list(set(self.get_child_node(root_node)))
+
+
+        print('node cnt : ', len(child_node), child_node)
+        print('node desc : ', child_node[0].get_children_descriptions())
+        return
+
+        # for node in child_node:
+        #     node1 = list(set(self.get_child_node(node)))
+        #     print('node desc : ', node1.get_children_descriptions())
+        #     print(node1)
+        #     for node in node1:
+        #         node1 = list(set(self.get_child_node(node)))
+        #         print('node desc : ', node1.get_children_descriptions())
+
+        # self.get_child_node2(child_node)
+
+
+        # treeview 의 아이템들 사이즈에 맞게 확장
+        self.treeView.resizeColumnToContents(0)
+        # self.treeView.resizeColumnToContents(1)
+
+
+    def get_child_node2(self, nodeList, gubun, level):
+        # print('nodeList : ', nodeList)
+
+        if not isinstance(nodeList, list):
+            nodeList = list(nodeList)
+
+        for idx, node in enumerate(nodeList):
+            if not isinstance(node, SyncNode):
+                node = self.client.get_node(node)
+
+            node_attrs = self.get_node_attrs(node)
+            print(gubun, level, ' , node desc : ', node, ' attrs : ', node_attrs, node_attrs[0].Text)
+
+            if node_attrs[0].Text == 'RFCC':
+                continue
+
+            print('type_definition : ', node.read_type_definition(), '  ', ua.object_ids.ObjectIdNames[node.read_type_definition().Identifier])
+
+            print('node class : ', node.read_node_class())
+            print('node variable : ', node.get_variables())
+            print('node property : ', node.get_properties())
+
+            guid2 = node.nodeid.Identifier
+            icon_grp = str(node.read_node_class()).split('.')[1]
+            d_name = node_attrs[0].Text
+            item_type = ua.object_ids.ObjectIdNames[node.read_type_definition().Identifier]
+
+            print('insert : ', guid2, icon_grp, d_name, level, idx, gubun, item_type)
+            self.treeList.append([guid2, icon_grp, d_name, level, idx, gubun, item_type])
+
+            c_node = list(set(node.get_children()))
+            print('child node : ', c_node)
+
+            if len(c_node) == 0:
+                # return
+                continue
+            else:
+                self.get_child_node2(c_node, gubun, level+1)
 
     def disconnect(self):
         try:
@@ -1036,7 +1137,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def get_children(node):
         descs = node.get_children_descriptions()
-        descs.sort(key=lambda x: x.BrowseName)
+        # descs.sort(key=lambda x: x.BrowseName)
         return descs
 
     def search_node(self):
@@ -1073,9 +1174,10 @@ class MainWindow(QMainWindow):
     def get_node_attrs(self, node):
         if not isinstance(node, SyncNode):
             node = self.client.get_node(node)
-        attrs = node.read_attributes([ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId])
+        attrs = node.read_attributes([ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId, ua.AttributeIds.NodeClass])
+        # attrs = node.read_attributes([])
 
-        return node, [attr.Value.Value.to_string() for attr in attrs]
+        return [attr.Value.Value for attr in attrs]
 
     def setup_context_menu_tree(self):
         self.treeView.setContextMenuPolicy(Qt.CustomContextMenu)
