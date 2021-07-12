@@ -907,8 +907,11 @@ class MainWindow(QMainWindow):
         self.private_key_path = None
 
         self.conn = None
-        self.treeList = list()
+        self.treeList = []
         self.level = 0
+        self.type_def = []
+        self.node_class_def = []
+        self.itemSetPointList = []
         ##############################
 
     def _reset(self):
@@ -983,8 +986,9 @@ class MainWindow(QMainWindow):
         # ExtensionObject 의 DynamicDataType 정의 불러오기
         self.client.load_type_definitions()
         # self.client.load_enums()
-
+        print('start : ', datetime.now())
         self.retrieve_tree()
+        print('end : ', datetime.now())
 
     # Tree 항목들을 조회후 펼치기
     def retrieve_tree(self):
@@ -1000,20 +1004,32 @@ class MainWindow(QMainWindow):
             if node.DisplayName.Text == "Objects":
                 # print(type(node), type(node.NodeId), node.NodeId)
                 c_descs = self.client.get_node(node.NodeId).get_children_descriptions()
+                node_ref = self.client.get_node(node.NodeId).get_references()
                 # print('c_descs : ', c_descs)
-                for c_node in c_descs:
+                # print('node_ref : ', len(node_ref), node_ref)
+
+                node_type = ''
+                for c_node in node_ref:
+                    # print(type(c_node.ReferenceTypeId), c_node.ReferenceTypeId, '  ', c_node)
                     if c_node.DisplayName.Text == "Server":
                         pass
+                    elif not c_node.IsForward:
+                        # print('parents : ', c_node.DisplayName.Text, ua.object_ids.ObjectIdNames[c_node.TypeDefinition.Identifier])
+                        pass
+                    elif str(c_node.ReferenceTypeId) == 'i=40':
+                        node_type = c_node.DisplayName.Text
+                        # print(' node_type : ', node_type)
                     else:
                         root_node = self.client.get_node(c_node.NodeId)
 
                         # tree 에 저장할 값 설정
-                        guid2 = c_node.NodeId.Identifier
-                        icon_grp = str(c_node.NodeClass).split('.')[1]
-                        d_name = c_node.DisplayName.Text
                         item_type = ua.object_ids.ObjectIdNames[c_node.TypeDefinition.Identifier]
-                        print(type(c_node), guid2, icon_grp, d_name, self.level, 0, '', item_type)
-                        self.treeList.append([guid2, icon_grp, d_name, self.level, 0, '', item_type])
+                        guid2 = c_node.NodeId.Identifier
+                        d_name = c_node.DisplayName.Text
+                        gubun = ''
+                        icon_grp = str(c_node.NodeClass).split('.')[1]
+                        print('folder insert : ', item_type, guid2, d_name, self.level, 0, gubun)
+                        self.treeList.append([item_type, guid2, d_name, self.level, 0, gubun])
 
         self.tree_ui.set_root_node(root_node)
         self.treeView.setFocus()
@@ -1021,54 +1037,33 @@ class MainWindow(QMainWindow):
 
         child_node = root_node.get_children_descriptions()
         print('ROOT CHILD desc : ', child_node[0], ' ,,,,, ', child_node[1])
+
         if 'Devices' in child_node[0].DisplayName.Text:
             gubun = 'D'
         else:
             gubun = 'M'
+
+        # Machines 만 하위 item 처리함
         self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1)
-        #
-        # if 'Devices' in child_node[1].DisplayName.Text:
-        #     gubun = 'D'
-        # else:
-        #     gubun = 'M'
-        # self.get_child_node2(child_node[1].NodeId, gubun)
 
-        # guid2 = ch1[0].NodeId.Identifier
-        # icon_grp = str(ch1[0].NodeClass).split('.')[1]
-        # d_name = ch1[0].DisplayName.Text
+        print(' item Tree list')
+        for item in self.treeList:
+            print(item)
 
-        # BaseObjectType(object), AnalogItemType(trend), BaseDataVariableType(waveform), PropertyType
-        # item_type = ua.object_ids.ObjectIdNames[ch1[0].TypeDefinition.Identifier]
+        print(' ### item setpoint ###')
+        for item in self.itemSetPointList:
+            print(item)
 
-        return
-
-        # print(ch1[0].NodeId.Identifier, ch1[0].DisplayName.Text, str(ch1[0].NodeClass).split('.')[1], ua.object_ids.ObjectIdNames[ch1[0].TypeDefinition.Identifier])
-        # print(guid2, icon_grp, d_name, self.level, 'array_index', gubun)
-        # self.treeList.append([guid2, icon_grp, d_name, self.level, 'array_index', gubun])
-        print('treeList :', self.treeList)
-
-        child_node = list(set(self.get_child_node(root_node)))
-
-
-        print('node cnt : ', len(child_node), child_node)
-        print('node desc : ', child_node[0].get_children_descriptions())
-        return
-
-        # for node in child_node:
-        #     node1 = list(set(self.get_child_node(node)))
-        #     print('node desc : ', node1.get_children_descriptions())
-        #     print(node1)
-        #     for node in node1:
-        #         node1 = list(set(self.get_child_node(node)))
-        #         print('node desc : ', node1.get_children_descriptions())
-
-        # self.get_child_node2(child_node)
-
+        print(' ### type ###')
+        for type in self.type_def:
+            print(type)
+        print(' ### node_class ###')
+        for node_class in self.node_class_def:
+            print(node_class)
 
         # treeview 의 아이템들 사이즈에 맞게 확장
         self.treeView.resizeColumnToContents(0)
         # self.treeView.resizeColumnToContents(1)
-
 
     def get_child_node2(self, nodeList, gubun, level):
         # print('nodeList : ', nodeList)
@@ -1077,37 +1072,149 @@ class MainWindow(QMainWindow):
             nodeList = list(nodeList)
 
         for idx, node in enumerate(nodeList):
+            # print('>>> current node : ', idx, node)
+
+            # 다음 루프 대상 초기화
+            next_node = []
+
             if not isinstance(node, SyncNode):
                 node = self.client.get_node(node)
 
+            # insert 할 변수들 초기화
+            item_type = ''
+            guid = ''
+            item_name = ''
+            item_level = ''
+            tag_name = ''
+            item_set_point = {}
+            item_EURange = {}
+            item_engineering_unit = ''
+            item_subunit = 0
+
+            node_ref = node.get_references()
+            # if level >= 6:
+            #     print('node      ref : ', len(node_ref), node_ref)
+            # print('node child ref : ', len(node.get_children_descriptions()), node.get_children_descriptions())
+
+            for c_node in node_ref:
+                # if level >= 6:
+                #     print('loop node ref : ', c_node)
+
+                str_type_def = ua.object_ids.ObjectIdNames[c_node.ReferenceTypeId.Identifier]
+
+                if str_type_def == 'HasNotifier':
+                    continue
+                if str_type_def == 'HasTypeDefinition':
+                    # item_type : BaseObjectType(object), AnalogItemType(trend), BaseDataVariableType(waveform), PropertyType
+                    item_type = c_node.DisplayName.Text
+
+                    if item_type not in self.type_def:
+                        print('type_definition : ', item_type, ' - ', c_node)
+                        self.type_def.append(item_type)
+
+                # print('1-', item_type, c_node.ReferenceTypeId.Identifier, str_type_def)
+
+                # 부모 정보( IsForward == False )
+                if not c_node.IsForward:
+                    continue
+                elif c_node.DisplayName.Text == 'RFCC':
+                    continue
+                elif c_node.DisplayName.Text == '금호석유화학':
+                    continue
+                elif str_type_def in ('HasTypeDefinition', 'HasCondition'):
+                    pass
+
+                elif c_node.DisplayName.Text == 'Tag Name':
+                    # print(c_node.DisplayName.Text, ' : ', c_node)
+                    tag_name = self.client.get_node(c_node.NodeId).read_value()
+                    # print(tag_name)
+
+                elif c_node.DisplayName.Text == 'EURange':
+                    # 사용하지 않음
+                    node_attr_value = self.client.get_node(c_node.NodeId).read_value()
+                    # print(type(node_attr_value), node_attr_value.Low, node_attr_value.High, node_attr_value, ' : ', c_node)
+                    item_EURange['Low'] = node_attr_value.Low
+                    item_EURange['High'] = node_attr_value.High
+
+                elif c_node.DisplayName.Text == 'EngineeringUnits':
+                    node_attr_value = self.client.get_node(c_node.NodeId).read_value()
+                    # print(type(node_attr_value), node_attr_value.DisplayName.Text, node_attr_value, ' : ', c_node)
+                    item_engineering_unit = node_attr_value.DisplayName.Text
+
+                elif c_node.DisplayName.Text == 'Subunit':
+                    node_attr_value = self.client.get_node(c_node.NodeId).read_value()
+                    # print(type(node_attr_value), node_attr_value, ' : ', c_node)
+                    item_subunit = node_attr_value
+
+                elif c_node.DisplayName.Text == 'Standard - Condition Monitoring Alarm':
+                    # node_attr_value = self.client.get_node(c_node.NodeId).read_value()
+                    node_attr_value = self.get_node_attrs(c_node.NodeId)
+                    # print(node_attr_value)
+                    # print('>>>> ', type(node_attr_value), node_attr_value[4].Text, node_attr_value, ' : ', c_node)
+                    item_set_point[node_attr_value[4].Text.split(' - ')[0]] = node_attr_value[4].Text.split(' - ')[1]
+                    # print(' get_children_descriptions ', self.client.get_node(c_node.NodeId).get_children_descriptions())
+                    set_point_node = self.client.get_node(c_node.NodeId).get_children_descriptions()
+                    for set_node in set_point_node:
+                        # print('set point node : ', set_node.DisplayName.Text, '  ', set_node)
+                        node_attr_value = self.client.get_node(set_node.NodeId).read_value()
+                        # print(set_node.DisplayName.Text, round(node_attr_value, 4))
+                        item_set_point[set_node.DisplayName.Text] = round(node_attr_value, 4)
+
+                    # print('item_set_point :::: ', item_set_point)
+
+                else:
+                    next_node.append(self.client.get_node(c_node.NodeId))
+
+            # print(type(node.read_node_class()), node.read_node_class())
+            if node.read_node_class() not in self.node_class_def:
+                print('node class : ', node.read_node_class())
+                self.node_class_def.append(node.read_node_class())
+
+            node_prop = node.get_properties()
+            node_var = node.get_variables()
+
             node_attrs = self.get_node_attrs(node)
-            print(gubun, level, ' , node desc : ', node, ' attrs : ', node_attrs, node_attrs[0].Text)
+            # print(gubun, level, ' , node desc : ', node, ' attrs : ', node_attrs, node_attrs[0].Text)
 
-            if node_attrs[0].Text == 'RFCC':
-                continue
+            # print('node variable : ', type(node_var), node_var)
+            # print('node property : ', type(node_prop), node_prop)
+            # print('node reference ', type(node_ref), node_ref)
+            # print('node path : ', node.get_path())
+            # print('node parent : ', node.get_parent())
 
-            print('type_definition : ', node.read_type_definition(), '  ', ua.object_ids.ObjectIdNames[node.read_type_definition().Identifier])
-
-            print('node class : ', node.read_node_class())
-            print('node variable : ', node.get_variables())
-            print('node property : ', node.get_properties())
-
-            guid2 = node.nodeid.Identifier
+            guid = node.nodeid.Identifier
             icon_grp = str(node.read_node_class()).split('.')[1]
-            d_name = node_attrs[0].Text
+            item_name = node_attrs[0].Text
             item_type = ua.object_ids.ObjectIdNames[node.read_type_definition().Identifier]
 
-            print('insert : ', guid2, icon_grp, d_name, level, idx, gubun, item_type)
-            self.treeList.append([guid2, icon_grp, d_name, level, idx, gubun, item_type])
+            if tag_name > '' and 'Channel' not in tag_name:
+                # print('tag name check : ', tag_name)
+                item_type = tag_name
+            elif item_type == 'AnalogItemType':
+                print('Trend Value : ', icon_grp, '  ', item_name)
 
-            c_node = list(set(node.get_children()))
-            print('child node : ', c_node)
+                # print('items :::: ', item_type, guid, item_name, item_level, tag_name, item_set_point,
+                #                      item_EURange, item_engineering_unit, item_subunit)
 
-            if len(c_node) == 0:
-                # return
-                continue
-            else:
-                self.get_child_node2(c_node, gubun, level+1)
+                # Trend Value 에만 존재함
+                self.itemSetPointList.append([guid, item_name, item_set_point, item_engineering_unit, item_subunit, item_EURange])
+
+            elif item_type == 'BaseDataVariableType':
+                print('Dynamic Value', icon_grp, '  ', item_name)
+
+            # print('insert : ', item_type, guid, item_name, level, idx, gubun)
+            self.treeList.append([item_type, guid, item_name, level, idx, gubun])
+
+            # next_node = list(set(node.get_children()))
+            if len(next_node) > 0:
+                # print('child node : ', next_node)
+                self.get_child_node2(next_node, gubun, level + 1)
+
+            # if len(c_node) == 0:
+            #     # return
+            #     continue
+            # else:
+            #     self.get_child_node2(c_node, gubun, level+1)
 
     def disconnect(self):
         try:
@@ -1174,7 +1281,7 @@ class MainWindow(QMainWindow):
     def get_node_attrs(self, node):
         if not isinstance(node, SyncNode):
             node = self.client.get_node(node)
-        attrs = node.read_attributes([ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId, ua.AttributeIds.NodeClass])
+        attrs = node.read_attributes([ua.AttributeIds.DisplayName, ua.AttributeIds.BrowseName, ua.AttributeIds.NodeId, ua.AttributeIds.NodeClass, ua.AttributeIds.Description])
         # attrs = node.read_attributes([])
 
         return [attr.Value.Value for attr in attrs]
