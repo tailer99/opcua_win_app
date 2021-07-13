@@ -48,7 +48,7 @@ class DataChangeHandler(QObject):
 
     def datachange_notification(self, node, val, data):
         # print(' datachange_notification start ', node, val, data.monitored_item.Value.SourceTimestamp)
-        print(' datachange_notification start ', node)
+        # print(' datachange_notification start ', node)
 
         # DB 연결 여부 확인
         self.conn.ping(True)
@@ -194,7 +194,6 @@ class DataChangeUI(object):
 
     @trycatchslot
     def _subscribe(self, node=None):
-
         if not isinstance(node, SyncNode):
             node = self.window.get_current_node()
             if node is None:
@@ -477,7 +476,7 @@ class EventUI(object):
 
     @trycatchslot
     def _subscribe(self, node=None):
-
+        print('EventUI', '_subscribe', __class__, __name__)
         if not node:
             node = self.window.get_current_node()
             if node is None:
@@ -769,7 +768,7 @@ class MainWindow(QMainWindow):
         self.logDockWidget.setWidget(self.logDockWidgetContents)
         self.addDockWidget(QtCore.Qt.DockWidgetArea(8), self.logDockWidget)
 
-        ########################
+        #############################
         #############################
 
         self.menuBar = QtWidgets.QMenuBar(self)
@@ -832,7 +831,6 @@ class MainWindow(QMainWindow):
         # tabify some docks
         self.tabifyDockWidget(self.attrDockWidget, self.eventDockWidget)
         self.tabifyDockWidget(self.refDockWidget, self.subDockWidget)
-
 
         #############################
         #############################
@@ -907,6 +905,9 @@ class MainWindow(QMainWindow):
         self.private_key_path = None
 
         self.conn = None
+        self.datachange_ui = None
+        self.event_ui = None
+
         self.treeList = []
         self.level = 0
         self.type_def = []
@@ -981,6 +982,11 @@ class MainWindow(QMainWindow):
             self.show_error(ex)
             raise
 
+        try:
+            self.conn = MysqlDBConn('dev').conn
+        except Exception as e:
+            print('MainWindow : DB Conn Error -- ', e)
+
         self._update_address_list(endpoint_url)
 
         # ExtensionObject 의 DynamicDataType 정의 불러오기
@@ -990,12 +996,24 @@ class MainWindow(QMainWindow):
         self.retrieve_tree()
         print('end : ', datetime.now())
 
+        # insert tree item to db
+        self.insert_tree_items()
+
+        # subscribe items
+        # self.subscribe_all_items()
+
+        # subscribe events
+        # self.subscribe_all_events()
+
     # Tree 항목들을 조회후 펼치기
     def retrieve_tree(self):
 
         root_node = self.client.nodes.root
         self.tree_ui.set_root_node(self.client.nodes.root)
         # print('root_node_attr : ', type(root_node), self.get_node_attrs(root_node))
+
+        # 정렬순서 초기값
+        disp_ord = ''
 
         descs = root_node.get_children_descriptions()
         # print('descs : ', descs)
@@ -1008,7 +1026,6 @@ class MainWindow(QMainWindow):
                 # print('c_descs : ', c_descs)
                 # print('node_ref : ', len(node_ref), node_ref)
 
-                node_type = ''
                 for c_node in node_ref:
                     # print(type(c_node.ReferenceTypeId), c_node.ReferenceTypeId, '  ', c_node)
                     if c_node.DisplayName.Text == "Server":
@@ -1017,38 +1034,141 @@ class MainWindow(QMainWindow):
                         # print('parents : ', c_node.DisplayName.Text, ua.object_ids.ObjectIdNames[c_node.TypeDefinition.Identifier])
                         pass
                     elif str(c_node.ReferenceTypeId) == 'i=40':
-                        node_type = c_node.DisplayName.Text
-                        # print(' node_type : ', node_type)
+                        pass
                     else:
                         root_node = self.client.get_node(c_node.NodeId)
 
                         # tree 에 저장할 값 설정
                         item_type = ua.object_ids.ObjectIdNames[c_node.TypeDefinition.Identifier]
-                        guid2 = c_node.NodeId.Identifier
-                        d_name = c_node.DisplayName.Text
+                        nodeId = c_node.NodeId.__str__()
+                        item_name = c_node.DisplayName.Text
                         gubun = ''
-                        icon_grp = str(c_node.NodeClass).split('.')[1]
-                        print('folder insert : ', item_type, guid2, d_name, self.level, 0, gubun)
-                        self.treeList.append([item_type, guid2, d_name, self.level, 0, gubun])
+                        p_nodeId = ''
+                        print('folder insert : ', item_type, nodeId, item_name, self.level, disp_ord, gubun)
+                        self.treeList.append([item_type, nodeId, item_name, self.level, disp_ord, gubun, p_nodeId])
 
         self.tree_ui.set_root_node(root_node)
         self.treeView.setFocus()
         self.treeView.expandToDepth(0)
 
         child_node = root_node.get_children_descriptions()
-        print('ROOT CHILD desc : ', child_node[0], ' ,,,,, ', child_node[1])
+        # print('ROOT CHILD desc : ', child_node[0], ' ,,,,, ', child_node[1])
 
+        # TODO Machine Device 둘다 할것인가?
         if 'Devices' in child_node[0].DisplayName.Text:
             gubun = 'D'
+
+            # Machines 만 하위 item 처리함
+            self.get_child_node2([str(child_node[1].NodeId)], gubun, self.level+1, disp_ord, nodeId)
         else:
             gubun = 'M'
 
-        # Machines 만 하위 item 처리함
-        self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1)
+            # Machines 만 하위 item 처리함
+            self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1, disp_ord, nodeId)
+
+        # treeview 의 아이템들 사이즈에 맞게 확장
+        self.treeView.resizeColumnToContents(0)
+        # self.treeView.resizeColumnToContents(1)
+
+    def insert_tree_items(self):
+
+        # DB 연결 여부 확인
+        self.conn.ping(True)
+        with self.conn.cursor() as curs:
+            try:
+                sql = 'delete from SDA_TREE where SYS1_ID = %s'
+                curs.execute(sql, '03')
+                self.conn.commit()
+
+            except Exception as e:
+                print('TREE DATA INSERT error occured : ', e)
+
+        p_item_id = 0
+        l1_item_id = 0
+        l2_item_id = 0
+
+        for item in self.treeList:
+            print(item[1], type(item[1]), item)
+
+            item_id = 0
+            item_name = ''
+            item_type = ''
+            item_level = 0
+            display_ord = ''
+            node_id = ''
+            p_node_id = ''
+            gubun = ''
+
+            with self.conn.cursor() as curs:
+                try:
+                    sql = 'select id from guid_to_key where guid = %s'
+                    curs.execute(sql, item[1])
+                    item_id = curs.fetchone()
+                    search_cnt = curs.rowcount
+
+                    if search_cnt == 0:
+                        sql = 'insert into guid_to_key(guid) values(%s)'
+                        curs.execute(sql, item[1])
+
+                        sql = 'select id from guid_to_key where guid = %s'
+                        curs.execute(sql, item[1])
+                        item_id = curs.fetchone()
+                        # print('rowcount : ', curs.rowcount)
+
+                    item_name = item[2]
+
+                    # TODO item type 은 db 로 분류될 수 있도록 수정
+                    if item[0] in('FolderType'):
+                        item_type = 'folder'
+                    elif item[0] in ('AnalogItemType', 'BaseDataVariableType'):
+                        item_type = 'sensor'
+                    elif item[0] == item[2]:
+                        item_type = 'object'
+                    elif item[0] in ('BaseObjectType', 'Non-Rotating Machine'):
+                        item_type = 'object'
+                    else:
+                        item_type = item[0]
+
+                    item_level = item[3]
+                    display_ord = item[4]
+
+                    if item_level == 2:
+                        l1_item_id = item_id
+                        l2_item_id = 0
+                    if item_level == 3:
+                        l2_item_id = item_id
+
+                    sys1_id = '03'
+                    node_id = item[1]
+                    p_node_id = item[6]
+                    gubun = item[5]
+
+
+                    sql = "insert into SDA_TREE(ITEM_ID, ITEM_NAME, ITEM_TYPE, ITEM_LEVEL, P_ITEM_ID, " \
+                          "       DISPLAY_ORD, L1_ITEM_ID, L2_ITEM_ID, SYS1_ID, NODE_ID, GUBUN, CREATE_DT) " \
+                          "SELECT %s, %s, %s, %s, " \
+                          "       ifnull((SELECT ITEM_ID FROM SDA_TREE WHERE SYS1_ID = %s AND NODE_ID = %s),0), " \
+                          "       %s, %s, %s, %s, %s, %s, NOW()"
+                          # "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                    record = (item_id, item_name, item_type, item_level, sys1_id, p_node_id,
+                              display_ord, l1_item_id, l2_item_id, sys1_id, node_id, gubun)
+                    curs.execute(sql, record)
+
+                    self.conn.commit()
+
+                except Exception as e:
+                    print('TREND DATA INSERT error occured : ', e)
+
+    # Static, Dynamic Data Change subscribe
+    def subscribe_all_items(self):
 
         print(' item Tree list')
         for item in self.treeList:
-            print(item)
+            print(item[1], '  ', item)
+
+            if item[0] in ('AnalogItemType', 'BaseDataVariableType'):
+                node = self.client.get_node(item[1])
+                self.datachange_ui._subscribe(node)
 
         print(' ### item setpoint ###')
         for item in self.itemSetPointList:
@@ -1057,15 +1177,14 @@ class MainWindow(QMainWindow):
         print(' ### type ###')
         for type in self.type_def:
             print(type)
-        print(' ### node_class ###')
-        for node_class in self.node_class_def:
-            print(node_class)
 
-        # treeview 의 아이템들 사이즈에 맞게 확장
-        self.treeView.resizeColumnToContents(0)
-        # self.treeView.resizeColumnToContents(1)
+    # Event subscribe
+    def subscribe_all_events(self):
+        print(self.treeList[1][1], '  ', self.treeList[1])
+        node = self.client.get_node(self.treeList[1][1])
+        self.event_ui._subscribe(node)
 
-    def get_child_node2(self, nodeList, gubun, level):
+    def get_child_node2(self, nodeList, gubun, level, disp_ord, p_node):
         # print('nodeList : ', nodeList)
 
         if not isinstance(nodeList, list):
@@ -1082,30 +1201,29 @@ class MainWindow(QMainWindow):
 
             # insert 할 변수들 초기화
             item_type = ''
-            guid = ''
+            nodeId = ''
+            p_nodeId = ''
             item_name = ''
             item_level = ''
             tag_name = ''
             item_set_point = {}
             item_EURange = {}
-            item_engineering_unit = ''
-            item_subunit = 0
+            item_Engineering_Unit = ''
+            item_Subunit = 0
 
             node_ref = node.get_references()
-            # if level >= 6:
-            #     print('node      ref : ', len(node_ref), node_ref)
+            # print('node       ref : ', len(node_ref), node_ref)
             # print('node child ref : ', len(node.get_children_descriptions()), node.get_children_descriptions())
 
             for c_node in node_ref:
-                # if level >= 6:
-                #     print('loop node ref : ', c_node)
+                # print('loop node ref : ', c_node)
 
                 str_type_def = ua.object_ids.ObjectIdNames[c_node.ReferenceTypeId.Identifier]
 
                 if str_type_def == 'HasNotifier':
                     continue
                 if str_type_def == 'HasTypeDefinition':
-                    # item_type : BaseObjectType(object), AnalogItemType(trend), BaseDataVariableType(waveform), PropertyType
+                    # item_type : BaseObjectType(object), AnalogItemType(trend), BaseDataVariableType(waveform)
                     item_type = c_node.DisplayName.Text
 
                     if item_type not in self.type_def:
@@ -1117,6 +1235,7 @@ class MainWindow(QMainWindow):
                 # 부모 정보( IsForward == False )
                 if not c_node.IsForward:
                     continue
+                # TODO 제외할 대상을 DB 에 반영하여 읽어오도록 수정
                 elif c_node.DisplayName.Text == 'RFCC':
                     continue
                 elif c_node.DisplayName.Text == '금호석유화학':
@@ -1130,31 +1249,29 @@ class MainWindow(QMainWindow):
                     # print(tag_name)
 
                 elif c_node.DisplayName.Text == 'EURange':
-                    # 사용하지 않음
                     node_attr_value = self.client.get_node(c_node.NodeId).read_value()
-                    # print(type(node_attr_value), node_attr_value.Low, node_attr_value.High, node_attr_value, ' : ', c_node)
+                    # print(node_attr_value.Low, node_attr_value.High, node_attr_value, ' : ', c_node)
                     item_EURange['Low'] = node_attr_value.Low
                     item_EURange['High'] = node_attr_value.High
 
                 elif c_node.DisplayName.Text == 'EngineeringUnits':
                     node_attr_value = self.client.get_node(c_node.NodeId).read_value()
-                    # print(type(node_attr_value), node_attr_value.DisplayName.Text, node_attr_value, ' : ', c_node)
-                    item_engineering_unit = node_attr_value.DisplayName.Text
+                    # print(node_attr_value.DisplayName.Text, node_attr_value, ' : ', c_node)
+                    item_Engineering_Unit = node_attr_value.DisplayName.Text
 
                 elif c_node.DisplayName.Text == 'Subunit':
                     node_attr_value = self.client.get_node(c_node.NodeId).read_value()
-                    # print(type(node_attr_value), node_attr_value, ' : ', c_node)
-                    item_subunit = node_attr_value
+                    # print(node_attr_value, ' : ', c_node)
+                    item_Subunit = node_attr_value
 
                 elif c_node.DisplayName.Text == 'Standard - Condition Monitoring Alarm':
-                    # node_attr_value = self.client.get_node(c_node.NodeId).read_value()
                     node_attr_value = self.get_node_attrs(c_node.NodeId)
                     # print(node_attr_value)
                     # print('>>>> ', type(node_attr_value), node_attr_value[4].Text, node_attr_value, ' : ', c_node)
                     item_set_point[node_attr_value[4].Text.split(' - ')[0]] = node_attr_value[4].Text.split(' - ')[1]
-                    # print(' get_children_descriptions ', self.client.get_node(c_node.NodeId).get_children_descriptions())
-                    set_point_node = self.client.get_node(c_node.NodeId).get_children_descriptions()
-                    for set_node in set_point_node:
+                    # print(' setpoint_descriptions ', self.client.get_node(c_node.NodeId).get_children_descriptions())
+                    set_point_nodes = self.client.get_node(c_node.NodeId).get_children_descriptions()
+                    for set_node in set_point_nodes:
                         # print('set point node : ', set_node.DisplayName.Text, '  ', set_node)
                         node_attr_value = self.client.get_node(set_node.NodeId).read_value()
                         # print(set_node.DisplayName.Text, round(node_attr_value, 4))
@@ -1165,25 +1282,13 @@ class MainWindow(QMainWindow):
                 else:
                     next_node.append(self.client.get_node(c_node.NodeId))
 
-            # print(type(node.read_node_class()), node.read_node_class())
-            if node.read_node_class() not in self.node_class_def:
-                print('node class : ', node.read_node_class())
-                self.node_class_def.append(node.read_node_class())
-
-            node_prop = node.get_properties()
-            node_var = node.get_variables()
-
             node_attrs = self.get_node_attrs(node)
             # print(gubun, level, ' , node desc : ', node, ' attrs : ', node_attrs, node_attrs[0].Text)
 
-            # print('node variable : ', type(node_var), node_var)
-            # print('node property : ', type(node_prop), node_prop)
-            # print('node reference ', type(node_ref), node_ref)
-            # print('node path : ', node.get_path())
-            # print('node parent : ', node.get_parent())
-
-            guid = node.nodeid.Identifier
-            icon_grp = str(node.read_node_class()).split('.')[1]
+            nodeId = str(node.nodeid)
+            # next step 의 Parent Node Id
+            p_nodeId = nodeId
+            # icon_grp = str(node.read_node_class()).split('.')[1]
             item_name = node_attrs[0].Text
             item_type = ua.object_ids.ObjectIdNames[node.read_type_definition().Identifier]
 
@@ -1191,30 +1296,28 @@ class MainWindow(QMainWindow):
                 # print('tag name check : ', tag_name)
                 item_type = tag_name
             elif item_type == 'AnalogItemType':
-                print('Trend Value : ', icon_grp, '  ', item_name)
+                # print('Static Value : ', item_type, '  ', item_name)
 
                 # print('items :::: ', item_type, guid, item_name, item_level, tag_name, item_set_point,
-                #                      item_EURange, item_engineering_unit, item_subunit)
+                #                      item_EURange, item_Engineering_Unit, item_Subunit)
 
                 # Trend Value 에만 존재함
-                self.itemSetPointList.append([guid, item_name, item_set_point, item_engineering_unit, item_subunit, item_EURange])
+                self.itemSetPointList.append([nodeId, item_name, item_set_point,
+                                              item_Engineering_Unit, item_Subunit, item_EURange])
 
-            elif item_type == 'BaseDataVariableType':
-                print('Dynamic Value', icon_grp, '  ', item_name)
+            # elif item_type == 'BaseDataVariableType':
+            #     print('Dynamic Value', item_type, '  ', item_name)
 
-            # print('insert : ', item_type, guid, item_name, level, idx, gubun)
-            self.treeList.append([item_type, guid, item_name, level, idx, gubun])
+            if level == 1:
+                display_ord = str(idx)
+            else:
+                display_ord = disp_ord + '_' + str(idx+1).zfill(2)
+            # print('insert : ', item_type, guid, item_name, level, idx, gubun, p_nodeId)
+            self.treeList.append([item_type, nodeId, item_name, level, display_ord, gubun, p_node])
 
-            # next_node = list(set(node.get_children()))
             if len(next_node) > 0:
                 # print('child node : ', next_node)
-                self.get_child_node2(next_node, gubun, level + 1)
-
-            # if len(c_node) == 0:
-            #     # return
-            #     continue
-            # else:
-            #     self.get_child_node2(c_node, gubun, level+1)
+                self.get_child_node2(next_node, gubun, level + 1, display_ord, p_nodeId)
 
     def disconnect(self):
         try:
@@ -1372,6 +1475,7 @@ class MainWindow(QMainWindow):
         msg.exec_()
 
     def subscribe_datachange(self, node, handler):
+        print('MainWindow', type(node), node)
         if not self._datachange_sub:
             self._datachange_sub = self.client.create_subscription(500, handler)
         handle = self._datachange_sub.subscribe_data_change(node)
