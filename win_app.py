@@ -999,6 +999,9 @@ class MainWindow(QMainWindow):
         # insert tree item to db
         self.insert_tree_items()
 
+        # insert item setpoint to db
+        self.insert_item_setpoint()
+
         # subscribe items
         # self.subscribe_all_items()
 
@@ -1070,6 +1073,7 @@ class MainWindow(QMainWindow):
         self.treeView.resizeColumnToContents(0)
         # self.treeView.resizeColumnToContents(1)
 
+    # Hierachy 정보 insert
     def insert_tree_items(self):
 
         # DB 연결 여부 확인
@@ -1077,27 +1081,18 @@ class MainWindow(QMainWindow):
         with self.conn.cursor() as curs:
             try:
                 sql = 'delete from SDA_TREE where SYS1_ID = %s'
+                # TODO sys1_id 대체
                 curs.execute(sql, '03')
                 self.conn.commit()
 
             except Exception as e:
                 print('TREE DATA INSERT error occured : ', e)
 
-        p_item_id = 0
         l1_item_id = 0
         l2_item_id = 0
 
         for item in self.treeList:
-            print(item[1], type(item[1]), item)
-
-            item_id = 0
-            item_name = ''
-            item_type = ''
-            item_level = 0
-            display_ord = ''
-            node_id = ''
-            p_node_id = ''
-            gubun = ''
+            # print(item[1], type(item[1]), item)
 
             with self.conn.cursor() as curs:
                 try:
@@ -1118,7 +1113,7 @@ class MainWindow(QMainWindow):
                     item_name = item[2]
 
                     # TODO item type 은 db 로 분류될 수 있도록 수정
-                    if item[0] in('FolderType'):
+                    if item[0] == 'FolderType':
                         item_type = 'folder'
                     elif item[0] in ('AnalogItemType', 'BaseDataVariableType'):
                         item_type = 'sensor'
@@ -1143,13 +1138,11 @@ class MainWindow(QMainWindow):
                     p_node_id = item[6]
                     gubun = item[5]
 
-
                     sql = "insert into SDA_TREE(ITEM_ID, ITEM_NAME, ITEM_TYPE, ITEM_LEVEL, P_ITEM_ID, " \
                           "       DISPLAY_ORD, L1_ITEM_ID, L2_ITEM_ID, SYS1_ID, NODE_ID, GUBUN, CREATE_DT) " \
                           "SELECT %s, %s, %s, %s, " \
                           "       ifnull((SELECT ITEM_ID FROM SDA_TREE WHERE SYS1_ID = %s AND NODE_ID = %s),0), " \
                           "       %s, %s, %s, %s, %s, %s, NOW()"
-                          # "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
                     record = (item_id, item_name, item_type, item_level, sys1_id, p_node_id,
                               display_ord, l1_item_id, l2_item_id, sys1_id, node_id, gubun)
                     curs.execute(sql, record)
@@ -1158,6 +1151,69 @@ class MainWindow(QMainWindow):
 
                 except Exception as e:
                     print('TREND DATA INSERT error occured : ', e)
+
+    # SetPoint 정보 insert
+    def insert_item_setpoint(self):
+
+        # DB 연결 여부 확인
+        self.conn.ping(True)
+        with self.conn.cursor() as curs:
+            try:
+                sql = 'delete from SDA_ITEM_SET_POINT where SYS1_ID = %s'
+                # TODO sys1_id 대체
+                curs.execute(sql, '03')
+                self.conn.commit()
+
+            except Exception as e:
+                print('ITEM SET POINT DATA INSERT error occured : ', e)
+
+        for item in self.itemSetPointList:
+            # print(item[0], type(item[0]), item)
+
+            with self.conn.cursor() as curs:
+                try:
+                    sql = 'select id from guid_to_key where guid = %s'
+                    curs.execute(sql, item[0])
+                    item_id = curs.fetchone()
+                    search_cnt = curs.rowcount
+
+                    if search_cnt == 0:
+                        sql = 'insert into guid_to_key(guid) values(%s)'
+                        curs.execute(sql, item[0])
+
+                        sql = 'select id from guid_to_key where guid = %s'
+                        curs.execute(sql, item[0])
+                        item_id = curs.fetchone()
+                        # print('rowcount : ', curs.rowcount)
+
+                    item_name = item[1]
+                    alarm_type = item[2].get('Alarm Type')
+                    over_highhigh  = item[2].get('Over.HighHighLimit')
+                    over_high      = item[2].get('Over.HighLimit')
+                    under_high     = item[2].get('Under.HighLimit')
+                    under_highhigh = item[2].get('Under.HighHighLimit')
+                    unit = item[3]
+                    subunit = item[4]
+
+                    range_low = item[5].get('Low')
+                    range_high = item[5].get('High')
+
+                    sys1_id = '03'
+
+                    sql = "insert into SDA_ITEM_SET_POINT(ITEM_ID, ITEM_NAME, ALARM_TYPE, OVER_HIGHHIGH, OVER_HIGH, " \
+                          "       UNDER_HIGH, UNDER_HIGHHIGH, UNIT, SUBUNIT, RANGE_LOW, RANGE_HIGH, SYS1_ID, CREATE_DT)" \
+                          "SELECT %s, %s, %s, %s, %s, %s, %s, %s, " \
+                          "       (SELECT SUBUNITNAME FROM TB_EQUIP_SUBUNIT WHERE SUBUNITCODE = %s), " \
+                          "       round(%s,4), round(%s,4), %s, NOW()"
+                    record = (item_id, item_name, alarm_type, over_highhigh, over_high,
+                              under_highhigh, under_high, unit, subunit, range_low, range_high, sys1_id)
+                    curs.execute(sql, record)
+
+                    self.conn.commit()
+
+                except Exception as e:
+                    print('TREND DATA INSERT error occured : ', e)
+
 
     # Static, Dynamic Data Change subscribe
     def subscribe_all_items(self):
