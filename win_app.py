@@ -18,8 +18,11 @@ import pymysql
 import base64
 
 logger = logging.getLogger(__name__)
-gv_sys1_id = '00'
+gv_sys1_id = 0
 gv_user_id = 'EDGE'
+# TODO ini 설정파일에서 읽기
+gv_write_interval = 120
+
 
 class MysqlDBConn:
 
@@ -73,11 +76,11 @@ class DataChangeHandler(QObject):
                         self.search_item_id(curs, gv_sys1_id, node)
                     # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
 
-                    sql = "insert ignore into SDA_WAVEFORM(CRT_WK, SYS1_ID, COMPANY_ID, POINT_ID, MEASUREMENT_ID, " \
+                    sql = "insert ignore into SDA_WAVEFORM(CRT_WK, SYS1_ID, POINT_ID, MEASUREMENT_ID, " \
                           "UTC_TIME_STAMP, NO_OF_DATA, C_DATA, UNIT_NAME, SUB_UNIT_NAME, RPM," \
                           "FMAX, FMAX_UNIT_NAME, SAMPLING_PERIOD, SAMPLING_PERIOD_UNIT_NAME, CREATE_DT) " \
-                          "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
-                    record = (crt_wk, gv_sys1_id, company_id, point_id, measurement_id,
+                          "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                    record = (crt_wk, gv_sys1_id, point_id, measurement_id,
                               val.UTCTimestamp.strftime('%Y-%m-%d %H:%M:%S'), val.NumberOfSamples, str(val.Data),
                               val.UnitName, val.SubunitName, int(val.RPM),
                               val.Fmax, val.FmaxUnitName, round(val.SamplingPeriod, 18), val.SamplingPeriodUnitName)
@@ -97,14 +100,12 @@ class DataChangeHandler(QObject):
 
             with self.conn.cursor() as curs:
                 try:
-                    # TODO ini 설정파일에서 읽기
-                    write_interval = 120
                     aggr_time_cd = '2M'
 
                     self.cur_update_time = datetime.now()
                     # 2분에 1번 쓰기
                     # 입력시간 조건이 되었는지와 입력된 건인지 비교하여 데이터 INSERT 수행
-                    if self.cur_update_time - self.last_update_time >= timedelta(seconds=write_interval):
+                    if self.cur_update_time - self.last_update_time >= timedelta(seconds=gv_write_interval):
                         self.inserted_data.clear()
                         self.last_update_time = self.cur_update_time
                     elif str(node.nodeid) in self.inserted_data:
@@ -113,16 +114,16 @@ class DataChangeHandler(QObject):
                         measurement_id, point_id, company_id, measurement_name = \
                             self.search_item_id(curs, gv_sys1_id, node)
                         # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
-                        sql = "insert ignore into SDA_TREND(SYS1_ID, COMPANY_ID, CRT_MONTH, POINT_ID, MEASUREMENT_ID, " \
+                        sql = "insert ignore into SDA_TREND(CRT_MONTH, SYS1_ID, POINT_ID, MEASUREMENT_ID, " \
                               "AGGR_TIME_CD, SOURCE_DT, VAL, VAL_TYPE, CREATE_DT) " \
-                              "values (%s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, NOW())"
-                        record = (gv_sys1_id, company_id, datetime.now().month, point_id, measurement_id,
+                              "values (%s, %s, %s, %s, %s, %s, round(%s,3), %s, NOW())"
+                        record = (datetime.now().month, gv_sys1_id, point_id, measurement_id,
                                   aggr_time_cd, data_ts, val, 2)
                         curs.execute(sql, record)
                         self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
 
                         self.conn.commit()
-                        print('static insert ok', datetime.now(), measurement_id, measurement_name)
+                        print('static insert ok', datetime.now(), measurement_id, measurement_name, val)
                         # TODO 로그파일에 쓰기, 화면 하단 log 에 출력하기
                         logger.info(('static insert ok', datetime.now(), measurement_id, measurement_name))
 
@@ -194,6 +195,7 @@ class DataChangeUI(object):
             # logger.warning("already subscribed to node: %s ", node)
             return
 
+        # TODO 컬럼 사이 키우기
         self.model.setHorizontalHeaderLabels(["DisplayName", "Value", "Timestamp"])
         text = node.read_display_name().Text
         row = [QStandardItem(text), QStandardItem("No Data yet"), QStandardItem("")]
@@ -222,7 +224,6 @@ class DataChangeUI(object):
             self.window.unsubscribe_datachange(node)
             self._subscribed_nodes.remove(node)
 
-            # TODO for 문으로 바꾸면 더 빠를 수 있음
             i = 0
             while self.model.item(i):
                 item = self.model.item(i)
@@ -247,7 +248,6 @@ class EventHandler(QObject):
 
     try:
         conn = MysqlDBConn('dev').conn
-        print('conn event :', conn)
     except Exception as e:
         print('EventHandler : DB Conn Error -- ', e)
 
@@ -325,7 +325,6 @@ class EventHandler(QObject):
 
                     print(sql, '    ', record)
                     curs.execute(sql, record)
-
                     self.conn.commit()
 
                 except Exception as e:
@@ -988,7 +987,7 @@ class MainWindow(QMainWindow):
         self.subscribe_all_items()
 
         # subscribe events
-        self.subscribe_all_events()
+        # self.subscribe_all_events()
 
     # Tree 항목들을 조회후 펼치기
     def retrieve_tree(self):
@@ -1037,23 +1036,17 @@ class MainWindow(QMainWindow):
         self.treeView.expandToDepth(0)
 
         child_node = root_node.get_children_descriptions()
-        # print('ROOT CHILD desc : ', child_node[0], ' ,,,,, ', child_node[1])
+        print('ROOT CHILD desc : ', len(child_node), child_node)
 
-        # TODO Machine Device 둘다 할것인가? 우선 Machine 만
-        #      Device 의 sensor 는 상위가 틀린데 구별할 수가 없다
-        # Machines 만 하위 item 처리함
-        if 'Devices' in child_node[0].DisplayName.Text:
-            gubun = 'M'
-            # Machines 만 하위 item 처리함
-            self.get_child_node2([str(child_node[1].NodeId)], gubun, self.level+1, disp_ord, nodeId)
-        else:
-            gubun = 'M'
-            self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1, disp_ord, nodeId)
-
-        # gubun = 'M'
-        # self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1, disp_ord, nodeId)
-        # gubun = 'D'
-        # self.get_child_node2([str(child_node[1].NodeId)], gubun, self.level+1, disp_ord, nodeId)
+        for node in child_node[:2]:
+            print(node.DisplayName.Text, node.NodeId, node)
+            if 'Devices' in node.DisplayName.Text:
+                gubun = 'D'
+                # Machines 만 하위 item 처리함
+                self.get_child_node2([str(node.NodeId)], gubun, self.level + 1, disp_ord, nodeId)
+            else:
+                gubun = 'M'
+                self.get_child_node2([str(node.NodeId)], gubun, self.level + 1, disp_ord, nodeId)
 
         # treeview 의 아이템들 사이즈에 맞게 확장
         self.treeView.resizeColumnToContents(0)
@@ -1072,7 +1065,7 @@ class MainWindow(QMainWindow):
                 self.conn.commit()
 
             except Exception as e:
-                print('TREE DATA INSERT error occured : ', e)
+                print('TREE DATA DELETE error occured : ', e)
 
         l1_item_id = 0
         l2_item_id = 0
@@ -1105,21 +1098,18 @@ class MainWindow(QMainWindow):
                     else:
                         gubun = item[5]
 
-                    # TODO sensor 는 상위가 틀려서 M, D 구분해서 입력해야
-
-                    sql = "insert into SDA_TREE(ITEM_ID, ITEM_NAME, ITEM_TYPE, ITEM_LEVEL, P_ITEM_ID, " \
+                    sql = "insert ignore into SDA_TREE(ITEM_ID, ITEM_NAME, ITEM_TYPE, ITEM_LEVEL, P_ITEM_ID, " \
                           "       DISPLAY_ORD, L1_ITEM_ID, L2_ITEM_ID, SYS1_ID, NODE_ID, GUBUN, CREATE_DT) " \
                           "SELECT %s, %s, %s, %s, " \
-                          "       ifnull((SELECT ITEM_ID FROM SDA_TREE WHERE SYS1_ID = %s AND NODE_ID = %s),0), " \
+                          "       ifnull((SELECT ITEM_ID FROM SDA_TREE WHERE SYS1_ID = %s AND NODE_ID = %s AND gubun = %s),0), " \
                           "       %s, %s, %s, %s, %s, %s, NOW()"
-                    record = (item_id, item_name, item_type, item_level, gv_sys1_id, p_node_id,
+                    record = (item_id, item_name, item_type, item_level, gv_sys1_id, p_node_id, gubun,
                               display_ord, l1_item_id, l2_item_id, gv_sys1_id, node_id, gubun)
                     curs.execute(sql, record)
-
                     self.conn.commit()
 
                 except Exception as e:
-                    print('TREND DATA INSERT error occured : ', e)
+                    print('TREE DATA INSERT error occurred : ', e)
 
     # SetPoint 정보 insert
     def insert_item_setpoint(self):
@@ -1133,7 +1123,7 @@ class MainWindow(QMainWindow):
                 self.conn.commit()
 
             except Exception as e:
-                print('ITEM SET POINT DATA INSERT error occured : ', e)
+                print('ITEM SET POINT DATA DELETE error occured : ', e)
 
         for item in self.itemSetPointList:
             # print(item[0], type(item[0]), item)
@@ -1156,19 +1146,18 @@ class MainWindow(QMainWindow):
                     range_low = item[5].get('Low')
                     range_high = item[5].get('High')
 
-                    sql = "insert into SDA_ITEM_SET_POINT(ITEM_ID, ITEM_NAME, ALARM_TYPE, OVER_HIGHHIGH, OVER_HIGH, " \
-                          "       UNDER_HIGH, UNDER_HIGHHIGH, UNIT, SUBUNIT, RANGE_LOW, RANGE_HIGH, SYS1_ID, CREATE_DT)" \
-                          "SELECT %s, %s, %s, %s, %s, %s, %s, %s, " \
+                    sql = "insert ignore into SDA_ITEM_SET_POINT(SYS1_ID, ITEM_ID, ITEM_NAME, ALARM_TYPE, OVER_HIGHHIGH, OVER_HIGH, " \
+                          "       UNDER_HIGH, UNDER_HIGHHIGH, UNIT, SUBUNIT, RANGE_LOW, RANGE_HIGH, CREATE_DT)" \
+                          "SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s," \
                           "       (SELECT NAME FROM SDA_SUBUNIT_CODE WHERE CODE = %s), " \
-                          "       round(%s,4), round(%s,4), %s, NOW()"
-                    record = (item_id, item_name, alarm_type, over_highhigh, over_high,
-                              under_highhigh, under_high, unit, subunit, range_low, range_high, gv_sys1_id)
+                          "       round(%s,4), round(%s,4), NOW()"
+                    record = (gv_sys1_id, item_id, item_name, alarm_type, over_highhigh, over_high,
+                              under_high, under_highhigh, unit, subunit, range_low, range_high)
                     curs.execute(sql, record)
-
                     self.conn.commit()
 
                 except Exception as e:
-                    print('TREND DATA INSERT error occured : ', e)
+                    print('ITEM SET POINT DATA INSERT error occured : ', e)
 
     # Static, Dynamic Data Change subscribe
     def subscribe_all_items(self):
@@ -1181,14 +1170,11 @@ class MainWindow(QMainWindow):
                 node = self.client.get_node(item[1])
                 self.datachange_ui._subscribe(node)
 
+            # TODO setpoint 정보가 바뀌었을 때도 datachange 에 값이 오는지 확인
 
         # print(' ### item setpoint ###')
         # for item in self.itemSetPointList:
         #     print(item)
-        #
-        # print(' ### type ###')
-        # for type in self.type_def:
-        #     print(type)
 
     # Event subscribe
     def subscribe_all_events(self):
@@ -1383,6 +1369,7 @@ class MainWindow(QMainWindow):
                   "select %s, %s, %s, NOW()"
             record = (sys1_id, node_id, item_name, item_class)
             curs.execute(sql, record)
+            self.conn.commit()
 
             sql = 'select ITEM_ID from SDA_NODE_ITEM_MAPPING where SYS1_ID = %s and NODE_ID = %s'
             record = (sys1_id, node_id)
@@ -1403,8 +1390,6 @@ class MainWindow(QMainWindow):
 
         # if not found
         if search_cnt == 0:
-            sql = "insert into SDA_NODE_ITEM_TYPE(SYS1_ID, ITEM_CLASS, ITEM_TYPE, CREATE_DT, CREATE_USER_ID) " \
-                  "select %s, %s, %s, NOW(), %s"
 
             # 기초 로직일 뿐 신규 항목 발생시 db table 값만 업데이트 해주고 다시 실행하면 반영됨
             if item_class == 'FolderType':
@@ -1418,8 +1403,11 @@ class MainWindow(QMainWindow):
             else:
                 item_type = item_class
 
+            sql = "insert into SDA_NODE_ITEM_TYPE(SYS1_ID, ITEM_CLASS, ITEM_TYPE, CREATE_DT, CREATE_USER_ID) " \
+                  "select %s, %s, %s, NOW(), %s"
             record = (sys1_id, item_class, item_type, gv_user_id)
             curs.execute(sql, record)
+            self.conn.commit()
 
             sql = 'select ITEM_TYPE from SDA_NODE_ITEM_TYPE where SYS1_ID = %s and ITEM_CLASS = %s'
             record = (sys1_id, item_class)
@@ -1445,7 +1433,6 @@ class MainWindow(QMainWindow):
                   "select %s, NOW(), %s"
             record = (endpoint_url, gv_user_id)
             curs.execute(sql, record)
-
             self.conn.commit()
 
             sql = 'select SYS1_ID from SDA_SYS1_LIST where ENDPOINT_URL = %s'
