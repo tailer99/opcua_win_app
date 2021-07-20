@@ -18,7 +18,8 @@ import pymysql
 import base64
 
 logger = logging.getLogger(__name__)
-
+gv_sys1_id = '00'
+gv_user_id = 'EDGE'
 
 class MysqlDBConn:
 
@@ -48,7 +49,6 @@ class DataChangeHandler(QObject):
 
     def datachange_notification(self, node, val, data):
         # print(' datachange_notification start ', node, val, data.monitored_item.Value.SourceTimestamp)
-        # print(' datachange_notification start ', node)
 
         # DB 연결 여부 확인
         self.conn.ping(True)
@@ -61,95 +61,86 @@ class DataChangeHandler(QObject):
             data_ts = datetime.now().isoformat().strftime('%Y-%m-%d %H:%M:%S')
         self.data_change_fired.emit(node, str(val), data_ts)
 
-        # TODO POINT, MESUREMENT 숫자로 변환하기
-
         if isinstance(val, ua.DynamicDataType):
-            print('waveform')
-            print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, val)
+            # print('waveform')
+            # print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, val)
 
             with self.conn.cursor() as curs:
                 try:
-                    sql = 'select id from guid_to_key where guid = %s'
-                    curs.execute(sql, node)
-                    measurement_id = curs.fetchone()
-                    search_cnt = curs.rowcount
-
-                    if search_cnt == 0:
-                        sql = 'insert into guid_to_key(guid) values(%s)'
-                        curs.execute(sql, node)
-
-                        sql = 'select id from guid_to_key where guid = %s'
-                        curs.execute(sql, node)
-                        measurement_id = curs.fetchone()
-                        # print('rowcount : ', curs.rowcount)
-
                     crt_wk = int(datetime.now().strftime('%W'))
-                    sys1_id = '03'
-                    company_id = 6
-                    point_id = 11
 
-                    sql = "insert into SDA_WAVEFORM(CRT_WK, SYS1_ID, COMPANY_ID, POINT_ID, MEASUREMENT_ID, " \
+                    measurement_id, point_id, company_id, measurement_name = \
+                        self.search_item_id(curs, gv_sys1_id, node)
+                    # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
+
+                    sql = "insert ignore into SDA_WAVEFORM(CRT_WK, SYS1_ID, COMPANY_ID, POINT_ID, MEASUREMENT_ID, " \
                           "UTC_TIME_STAMP, NO_OF_DATA, C_DATA, UNIT_NAME, SUB_UNIT_NAME, RPM," \
                           "FMAX, FMAX_UNIT_NAME, SAMPLING_PERIOD, SAMPLING_PERIOD_UNIT_NAME, CREATE_DT) " \
                           "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
-                    record = (crt_wk, sys1_id, company_id, point_id, measurement_id[0],
+                    record = (crt_wk, gv_sys1_id, company_id, point_id, measurement_id,
                               val.UTCTimestamp.strftime('%Y-%m-%d %H:%M:%S'), val.NumberOfSamples, str(val.Data),
                               val.UnitName, val.SubunitName, int(val.RPM),
                               val.Fmax, val.FmaxUnitName, round(val.SamplingPeriod, 18), val.SamplingPeriodUnitName)
                     # print('input data :', record)
 
                     curs.execute(sql, record)
-                    print('insert ok', datetime.now())
                     self.conn.commit()
+                    print('dynamic insert ok', datetime.now(), measurement_id, measurement_name)
+                    # TODO 로그파일에 쓰기, 화면 하단 log 에 출력하기
+                    logger.info(('dynamic insert ok', datetime.now(), measurement_id, measurement_name))
 
                 except Exception as e:
-                    print('WAVEFORM DATA INSERT error occured : ', e, sql)
+                    print('dynamic data INSERT error occurred : ', e, sql)
 
         else:
             # print('trend', node, data)
-            # print('check: ', len(self.inserted_data))
 
             with self.conn.cursor() as curs:
                 try:
-                    sql = 'select id from guid_to_key where guid = %s'
-                    curs.execute(sql, node)
-                    measurement_id = curs.fetchone()
-                    search_cnt = curs.rowcount
-
-                    if search_cnt == 0:
-                        sql = 'insert into guid_to_key(guid) values(%s)'
-                        curs.execute(sql, node)
-
-                        sql = 'select id from guid_to_key where guid = %s'
-                        curs.execute(sql, node)
-                        measurement_id = curs.fetchone()
-                        # print('rowcount : ', curs.rowcount)
+                    # TODO ini 설정파일에서 읽기
+                    write_interval = 120
+                    aggr_time_cd = '2M'
 
                     self.cur_update_time = datetime.now()
                     # 2분에 1번 쓰기
-                    # 입력시간 조건 비교하여 변수값 셋
-                    if self.cur_update_time - self.last_update_time >= timedelta(seconds=120):
-                        write_yn = True
-                    else:
-                        write_yn = False
-
                     # 입력시간 조건이 되었는지와 입력된 건인지 비교하여 데이터 INSERT 수행
-                    if write_yn and str(node.nodeid) not in self.inserted_data:
-                        sql = "insert into SDA_TREND(SYS1_ID, COMPANY_ID, CRT_MONTH, POINT_ID, MEASUREMENT_ID, " \
+                    if self.cur_update_time - self.last_update_time >= timedelta(seconds=write_interval):
+                        self.inserted_data.clear()
+                        self.last_update_time = self.cur_update_time
+                    elif str(node.nodeid) in self.inserted_data:
+                        pass
+                    else:
+                        measurement_id, point_id, company_id, measurement_name = \
+                            self.search_item_id(curs, gv_sys1_id, node)
+                        # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
+                        sql = "insert ignore into SDA_TREND(SYS1_ID, COMPANY_ID, CRT_MONTH, POINT_ID, MEASUREMENT_ID, " \
                               "AGGR_TIME_CD, SOURCE_DT, VAL, VAL_TYPE, CREATE_DT) " \
-                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
-                        record = ('03', 1, 6, 11, measurement_id[0], '2M', data_ts, round(val, 3), 2)
+                              "values (%s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, NOW())"
+                        record = (gv_sys1_id, company_id, datetime.now().month, point_id, measurement_id,
+                                  aggr_time_cd, data_ts, val, 2)
                         curs.execute(sql, record)
                         self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
 
-                    elif self.cur_update_time - self.last_update_time >= timedelta(seconds=120):
-                        self.inserted_data.clear()
-                        self.last_update_time = self.cur_update_time
-
-                    self.conn.commit()
+                        self.conn.commit()
+                        print('static insert ok', datetime.now(), measurement_id, measurement_name)
+                        # TODO 로그파일에 쓰기, 화면 하단 log 에 출력하기
+                        logger.info(('static insert ok', datetime.now(), measurement_id, measurement_name))
 
                 except Exception as e:
-                    print('TREND DATA INSERT error occured : ', e)
+                    print('static data INSERT error occured : ', e)
+
+    # using NodeID find ITEM_ID
+    def search_item_id(self, curs, sys1_id, node_id):
+
+        # search ITEM ID
+        sql = "select ITEM_ID, P_ITEM_ID, L1_ITEM_ID, ITEM_NAME " \
+              "from SDA_TREE where SYS1_ID = %s and NODE_ID = %s and GUBUN = 'S'"
+        record = (sys1_id, node_id)
+        curs.execute(sql, record)
+        item_id, p_item_id, l1_item_id, item_name = curs.fetchone()
+        # search_cnt = curs.rowcount
+
+        return item_id, p_item_id, l1_item_id, item_name
 
 
 class DataChangeUI(object):
@@ -266,9 +257,13 @@ class EventHandler(QObject):
     def event_notification(self, event):
         print(' event_notification start ', type(event), event)
         print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
-              ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text, ' ',
+              ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text,
               event.ActiveState.Text,
               ' AckedState : ', event.AckedState.Text)
+
+        # TODO ConditionId 표시되도록 수정
+        # TODO RefreshStartEvent 실행
+        # TODO ack 와 unack 시 공통 로직 추출
 
         if event.AckedState.Text == 'Acknowledged':
             # pass
@@ -279,28 +274,10 @@ class EventHandler(QObject):
 
             with self.conn.cursor() as curs:
                 try:
-                    # TODO system1 변수값 셋팅
-                    sys1_id = '03'
-
                     event_id = base64.b64encode(event.EventId)
 
-                    # TODO point_id, measurement_id 를 tree 구조에서 데이터 가져오도록 수정해야 함
-                    sql = 'select id from guid_to_key where guid = %s'
-                    curs.execute(sql, event.SourceNode)
-                    measurement_temp = curs.fetchone()
-                    search_cnt = curs.rowcount
-
-                    if search_cnt == 0:
-                        sql = 'insert into guid_to_key(guid) values(%s)'
-                        curs.execute(sql, event.SourceNode)
-
-                        sql = 'select id from guid_to_key where guid = %s'
-                        curs.execute(sql, event.SourceNode)
-                        measurement_temp = curs.fetchone()
-                        # print('rowcount : ', curs.rowcount)
-
-                    point_id = 0
-                    measurement_id = measurement_temp[0]
+                    measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
+                    # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
 
                     alarm_level = event.ConditionName[-1]
 
@@ -335,16 +312,16 @@ class EventHandler(QObject):
                               "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
                               "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
                         record = (
-                        sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
-                        machine, point, measurement, trigger_value, server_time_stamp, 'N', 'Edge')
+                        gv_sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
+                        machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
                     # 알람이 종료되었을 때는 UPDATE
                     else:
                         sql = "update SDA_EVENT " \
                               "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
-                              "       UPDATE_ID = 'Edge', UPDATE_DT = NOW() " \
+                              "       UPDATE_ID = %s, UPDATE_DT = NOW() " \
                               "where  SYS1_ID = %s " \
                               "and    EVENT_ID = %s "
-                        record = (left_dt, is_active, sys1_id, event_id)
+                        record = (left_dt, is_active, gv_user_id, gv_sys1_id, event_id)
 
                     print(sql, '    ', record)
                     curs.execute(sql, record)
@@ -361,28 +338,10 @@ class EventHandler(QObject):
 
             with self.conn.cursor() as curs:
                 try:
-                    # TODO system1 변수값 셋팅
-                    sys1_id = '03'
-
                     event_id = base64.b64encode(event.EventId)
 
-                    # TODO point_id, measurement_id 를 tree 구조에서 데이터 가져오도록 수정해야 함
-                    sql = 'select id from guid_to_key where guid = %s'
-                    curs.execute(sql, event.SourceNode)
-                    measurement_temp = curs.fetchone()
-                    search_cnt = curs.rowcount
-
-                    if search_cnt == 0:
-                        sql = 'insert into guid_to_key(guid) values(%s)'
-                        curs.execute(sql, event.SourceNode)
-
-                        sql = 'select id from guid_to_key where guid = %s'
-                        curs.execute(sql, event.SourceNode)
-                        measurement_temp = curs.fetchone()
-                        # print('rowcount : ', curs.rowcount)
-
-                    point_id = 0
-                    measurement_id = measurement_temp[0]
+                    measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
+                    # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
 
                     alarm_level = event.ConditionName[-1]
 
@@ -416,16 +375,16 @@ class EventHandler(QObject):
                               "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
                               "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
                               "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
-                        record = (sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
-                                  machine, point, measurement, trigger_value, server_time_stamp, 'N', 'Edge')
+                        record = (gv_sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
+                                  machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
                     # 알람이 종료되었을 때는 UPDATE
                     else:
                         sql = "update SDA_EVENT " \
                               "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
-                              "       UPDATE_ID = 'Edge', UPDATE_DT = NOW() " \
+                              "       UPDATE_ID = %s, UPDATE_DT = NOW() " \
                               "where  SYS1_ID = %s " \
                               "and    EVENT_ID = %s "
-                        record = (left_dt, is_active, sys1_id, event_id)
+                        record = (left_dt, is_active, gv_user_id, gv_sys1_id, event_id)
 
                     print(sql, '    ', record)
                     curs.execute(sql, record)
@@ -436,6 +395,18 @@ class EventHandler(QObject):
                     print('EVENT DATA INSERT error occurred : ', e)
 
             self.event_fired.emit(event)
+
+    # using NodeID find ITEM_ID
+    def search_item_id(self, curs, sys1_id, node_id):
+
+        # search ITEM ID
+        sql = "select ITEM_ID, P_ITEM_ID, L1_ITEM_ID from SDA_TREE where SYS1_ID = %s and NODE_ID = %s and GUBUN = 'S'"
+        record = (sys1_id, node_id)
+        curs.execute(sql, record)
+        item_id, p_item_id, l1_item_id = curs.fetchone()
+        # search_cnt = curs.rowcount
+
+        return item_id, p_item_id, l1_item_id
 
 
 class EventUI(object):
@@ -967,25 +938,36 @@ class MainWindow(QMainWindow):
 
     @trycatchslot
     def connect(self):
+
+        # 1. check EDGE DB connection
+        try:
+            self.conn = MysqlDBConn('dev').conn
+        except Exception as e:
+            print('MainWindow : DB Conn Error -- ', e)
+
+        # 2. connect System1 Server
         endpoint_url = self.addrComboBox.currentText()
         endpoint_url = endpoint_url.strip()
         try:
-            self.client = Client(endpoint_url, timeout=2)
+            global gv_sys1_id
+
+            with self.conn.cursor() as curs:
+                try:
+                    gv_sys1_id = self.search_sys1_id(curs, endpoint_url)
+
+                except Exception as e:
+                    print('search sys1 id error occurred : ', e)
+
+            self.client = Client(endpoint_url)
             self.client.connect()
 
             # client 연결 후 초기화 시킴
             self.datachange_ui = DataChangeUI(self, self.client)
             self.event_ui = EventUI(self, self.client)
 
-            # self.graph_ui = GraphUI(self, self.uaclient)
         except Exception as ex:
             self.show_error(ex)
             raise
-
-        try:
-            self.conn = MysqlDBConn('dev').conn
-        except Exception as e:
-            print('MainWindow : DB Conn Error -- ', e)
 
         self._update_address_list(endpoint_url)
 
@@ -1003,10 +985,10 @@ class MainWindow(QMainWindow):
         self.insert_item_setpoint()
 
         # subscribe items
-        # self.subscribe_all_items()
+        self.subscribe_all_items()
 
         # subscribe events
-        # self.subscribe_all_events()
+        self.subscribe_all_events()
 
     # Tree 항목들을 조회후 펼치기
     def retrieve_tree(self):
@@ -1057,17 +1039,21 @@ class MainWindow(QMainWindow):
         child_node = root_node.get_children_descriptions()
         # print('ROOT CHILD desc : ', child_node[0], ' ,,,,, ', child_node[1])
 
-        # TODO Machine Device 둘다 할것인가?
+        # TODO Machine Device 둘다 할것인가? 우선 Machine 만
+        #      Device 의 sensor 는 상위가 틀린데 구별할 수가 없다
+        # Machines 만 하위 item 처리함
         if 'Devices' in child_node[0].DisplayName.Text:
-            gubun = 'D'
-
+            gubun = 'M'
             # Machines 만 하위 item 처리함
             self.get_child_node2([str(child_node[1].NodeId)], gubun, self.level+1, disp_ord, nodeId)
         else:
             gubun = 'M'
-
-            # Machines 만 하위 item 처리함
             self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1, disp_ord, nodeId)
+
+        # gubun = 'M'
+        # self.get_child_node2([str(child_node[0].NodeId)], gubun, self.level+1, disp_ord, nodeId)
+        # gubun = 'D'
+        # self.get_child_node2([str(child_node[1].NodeId)], gubun, self.level+1, disp_ord, nodeId)
 
         # treeview 의 아이템들 사이즈에 맞게 확장
         self.treeView.resizeColumnToContents(0)
@@ -1078,11 +1064,11 @@ class MainWindow(QMainWindow):
 
         # DB 연결 여부 확인
         self.conn.ping(True)
+
         with self.conn.cursor() as curs:
             try:
                 sql = 'delete from SDA_TREE where SYS1_ID = %s'
-                # TODO sys1_id 대체
-                curs.execute(sql, '03')
+                curs.execute(sql, gv_sys1_id)
                 self.conn.commit()
 
             except Exception as e:
@@ -1092,40 +1078,19 @@ class MainWindow(QMainWindow):
         l2_item_id = 0
 
         for item in self.treeList:
-            # print(item[1], type(item[1]), item)
+            print(item)
 
             with self.conn.cursor() as curs:
                 try:
-                    sql = 'select id from guid_to_key where guid = %s'
-                    curs.execute(sql, item[1])
-                    item_id = curs.fetchone()
-                    search_cnt = curs.rowcount
 
-                    if search_cnt == 0:
-                        sql = 'insert into guid_to_key(guid) values(%s)'
-                        curs.execute(sql, item[1])
-
-                        sql = 'select id from guid_to_key where guid = %s'
-                        curs.execute(sql, item[1])
-                        item_id = curs.fetchone()
-                        # print('rowcount : ', curs.rowcount)
-
+                    item_class = item[0]
+                    node_id = item[1]
                     item_name = item[2]
-
-                    # TODO item type 은 db 로 분류될 수 있도록 수정
-                    if item[0] == 'FolderType':
-                        item_type = 'folder'
-                    elif item[0] in ('AnalogItemType', 'BaseDataVariableType'):
-                        item_type = 'sensor'
-                    elif item[0] == item[2]:
-                        item_type = 'object'
-                    elif item[0] in ('BaseObjectType', 'Non-Rotating Machine'):
-                        item_type = 'object'
-                    else:
-                        item_type = item[0]
-
                     item_level = item[3]
                     display_ord = item[4]
+
+                    item_id = self.search_item_id(curs, gv_sys1_id, node_id, item_name, item_class)[0]
+                    item_type = self.search_item_type(curs, gv_sys1_id, item_name, item_class)[0]
 
                     if item_level == 2:
                         l1_item_id = item_id
@@ -1133,18 +1098,22 @@ class MainWindow(QMainWindow):
                     if item_level == 3:
                         l2_item_id = item_id
 
-                    sys1_id = '03'
-                    node_id = item[1]
                     p_node_id = item[6]
-                    gubun = item[5]
+
+                    if item_type == 'sensor':
+                        gubun = 'S'
+                    else:
+                        gubun = item[5]
+
+                    # TODO sensor 는 상위가 틀려서 M, D 구분해서 입력해야
 
                     sql = "insert into SDA_TREE(ITEM_ID, ITEM_NAME, ITEM_TYPE, ITEM_LEVEL, P_ITEM_ID, " \
                           "       DISPLAY_ORD, L1_ITEM_ID, L2_ITEM_ID, SYS1_ID, NODE_ID, GUBUN, CREATE_DT) " \
                           "SELECT %s, %s, %s, %s, " \
                           "       ifnull((SELECT ITEM_ID FROM SDA_TREE WHERE SYS1_ID = %s AND NODE_ID = %s),0), " \
                           "       %s, %s, %s, %s, %s, %s, NOW()"
-                    record = (item_id, item_name, item_type, item_level, sys1_id, p_node_id,
-                              display_ord, l1_item_id, l2_item_id, sys1_id, node_id, gubun)
+                    record = (item_id, item_name, item_type, item_level, gv_sys1_id, p_node_id,
+                              display_ord, l1_item_id, l2_item_id, gv_sys1_id, node_id, gubun)
                     curs.execute(sql, record)
 
                     self.conn.commit()
@@ -1160,8 +1129,7 @@ class MainWindow(QMainWindow):
         with self.conn.cursor() as curs:
             try:
                 sql = 'delete from SDA_ITEM_SET_POINT where SYS1_ID = %s'
-                # TODO sys1_id 대체
-                curs.execute(sql, '03')
+                curs.execute(sql, gv_sys1_id)
                 self.conn.commit()
 
             except Exception as e:
@@ -1172,21 +1140,11 @@ class MainWindow(QMainWindow):
 
             with self.conn.cursor() as curs:
                 try:
-                    sql = 'select id from guid_to_key where guid = %s'
-                    curs.execute(sql, item[0])
-                    item_id = curs.fetchone()
-                    search_cnt = curs.rowcount
-
-                    if search_cnt == 0:
-                        sql = 'insert into guid_to_key(guid) values(%s)'
-                        curs.execute(sql, item[0])
-
-                        sql = 'select id from guid_to_key where guid = %s'
-                        curs.execute(sql, item[0])
-                        item_id = curs.fetchone()
-                        # print('rowcount : ', curs.rowcount)
-
+                    node_id = item[0]
                     item_name = item[1]
+
+                    item_id = self.search_item_id(curs, gv_sys1_id, node_id, item_name, item_class=None)
+
                     alarm_type = item[2].get('Alarm Type')
                     over_highhigh  = item[2].get('Over.HighHighLimit')
                     over_high      = item[2].get('Over.HighLimit')
@@ -1198,15 +1156,13 @@ class MainWindow(QMainWindow):
                     range_low = item[5].get('Low')
                     range_high = item[5].get('High')
 
-                    sys1_id = '03'
-
                     sql = "insert into SDA_ITEM_SET_POINT(ITEM_ID, ITEM_NAME, ALARM_TYPE, OVER_HIGHHIGH, OVER_HIGH, " \
                           "       UNDER_HIGH, UNDER_HIGHHIGH, UNIT, SUBUNIT, RANGE_LOW, RANGE_HIGH, SYS1_ID, CREATE_DT)" \
                           "SELECT %s, %s, %s, %s, %s, %s, %s, %s, " \
-                          "       (SELECT SUBUNITNAME FROM TB_EQUIP_SUBUNIT WHERE SUBUNITCODE = %s), " \
+                          "       (SELECT NAME FROM SDA_SUBUNIT_CODE WHERE CODE = %s), " \
                           "       round(%s,4), round(%s,4), %s, NOW()"
                     record = (item_id, item_name, alarm_type, over_highhigh, over_high,
-                              under_highhigh, under_high, unit, subunit, range_low, range_high, sys1_id)
+                              under_highhigh, under_high, unit, subunit, range_low, range_high, gv_sys1_id)
                     curs.execute(sql, record)
 
                     self.conn.commit()
@@ -1214,25 +1170,25 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     print('TREND DATA INSERT error occured : ', e)
 
-
     # Static, Dynamic Data Change subscribe
     def subscribe_all_items(self):
 
-        print(' item Tree list')
+        # print(' item Tree list')
         for item in self.treeList:
-            print(item[1], '  ', item)
 
-            if item[0] in ('AnalogItemType', 'BaseDataVariableType'):
+            if item[0] in ('AnalogItemType', 'BaseDataVariableType') and item[5] == 'M':
+                print('subscribe item : ', item)
                 node = self.client.get_node(item[1])
                 self.datachange_ui._subscribe(node)
 
-        print(' ### item setpoint ###')
-        for item in self.itemSetPointList:
-            print(item)
 
-        print(' ### type ###')
-        for type in self.type_def:
-            print(type)
+        # print(' ### item setpoint ###')
+        # for item in self.itemSetPointList:
+        #     print(item)
+        #
+        # print(' ### type ###')
+        # for type in self.type_def:
+        #     print(type)
 
     # Event subscribe
     def subscribe_all_events(self):
@@ -1351,6 +1307,9 @@ class MainWindow(QMainWindow):
             if tag_name > '' and 'Channel' not in tag_name:
                 # print('tag name check : ', tag_name)
                 item_type = tag_name
+            elif tag_name > '' and 'Channel' in tag_name:
+                # print('tag name check : ', tag_name)
+                item_type = 'point'
             elif item_type == 'AnalogItemType':
                 # print('Static Value : ', item_type, '  ', item_name)
 
@@ -1358,14 +1317,16 @@ class MainWindow(QMainWindow):
                 #                      item_EURange, item_Engineering_Unit, item_Subunit)
 
                 # Trend Value 에만 존재함
-                self.itemSetPointList.append([nodeId, item_name, item_set_point,
-                                              item_Engineering_Unit, item_Subunit, item_EURange])
+                # 중복되지 않게 machine 에서만 추가함
+                if gubun == 'M':
+                    self.itemSetPointList.append([nodeId, item_name, item_set_point,
+                                                  item_Engineering_Unit, item_Subunit, item_EURange])
 
             # elif item_type == 'BaseDataVariableType':
             #     print('Dynamic Value', item_type, '  ', item_name)
 
             if level == 1:
-                display_ord = str(idx)
+                display_ord = gubun
             else:
                 display_ord = disp_ord + '_' + str(idx+1).zfill(2)
             # print('insert : ', item_type, guid, item_name, level, idx, gubun, p_nodeId)
@@ -1406,36 +1367,95 @@ class MainWindow(QMainWindow):
         # descs.sort(key=lambda x: x.BrowseName)
         return descs
 
-    def search_node(self):
-        root_node_id = self.client.nodes.root
-        print('a ', root_node_id, type(root_node_id))
+    # using NodeID find ITEM_ID
+    def search_item_id(self, curs, sys1_id, node_id, item_name, item_class):
 
-        # nodeid = ua.NodeId.from_string(uri)
-        # nodeid = 'i=84' Root
-        node = self.get_child_node(str(root_node_id))
-        print('node : ', node)
-        print(self.get_node_attrs(node[0]))
-        # node[0] i=85 Objects
-        node1 = self.client.get_node(str(node[0])).get_children()
+        # search ITEM ID
+        sql = 'select ITEM_ID from SDA_NODE_ITEM_MAPPING where SYS1_ID = %s and NODE_ID = %s'
+        record = (sys1_id, node_id)
+        curs.execute(sql, record)
+        item_id = curs.fetchone()
+        search_cnt = curs.rowcount
 
-        print(node1, len(node1), type(node1), type(node1[1]), node1[1])
-        print(self.get_node_attrs(node1[1]))
+        # if not found
+        if search_cnt == 0:
+            sql = "insert into SDA_NODE_ITEM_MAPPING(SYS1_ID, NODE_ID, ITEM_NAME, ITEM_CLASS, CREATE_DT) " \
+                  "select %s, %s, %s, NOW()"
+            record = (sys1_id, node_id, item_name, item_class)
+            curs.execute(sql, record)
 
-        node2 = self.client.get_node(str(node1[1])).get_children()
-        print('node2 : ', node2)
-        print(self.get_node_attrs(node2[0]))
-        node2x = node1[1].get_children()
-        print('node2x : ', node2x)
-        print(self.get_node_attrs(node2x[1]))
-        for node in node2x:
-            print(node.get_children_descriptions())
-            print(self.get_node_attrs(node))
-        # a = 0
-        # while a <= 20:
-        #     if len(node1) > 0:
-        #         node1 = self.client.get_node(str(node1[1])).get_children()
-        #         print(node1, len(node1), type(node1))
-        #         a += 1
+            sql = 'select ITEM_ID from SDA_NODE_ITEM_MAPPING where SYS1_ID = %s and NODE_ID = %s'
+            record = (sys1_id, node_id)
+            curs.execute(sql, record)
+            item_id = curs.fetchone()
+
+        return item_id
+
+    # using ItemClass find ItemType
+    def search_item_type(self, curs, sys1_id, item_name, item_class):
+
+        # search ITEM ID
+        sql = 'select ITEM_TYPE from SDA_NODE_ITEM_TYPE where SYS1_ID = %s and ITEM_CLASS = %s'
+        record = (sys1_id, item_class)
+        curs.execute(sql, record)
+        item_type = curs.fetchone()
+        search_cnt = curs.rowcount
+
+        # if not found
+        if search_cnt == 0:
+            sql = "insert into SDA_NODE_ITEM_TYPE(SYS1_ID, ITEM_CLASS, ITEM_TYPE, CREATE_DT, CREATE_USER_ID) " \
+                  "select %s, %s, %s, NOW(), %s"
+
+            # 기초 로직일 뿐 신규 항목 발생시 db table 값만 업데이트 해주고 다시 실행하면 반영됨
+            if item_class == 'FolderType':
+                item_type = 'folder'
+            elif item_class in ('AnalogItemType', 'BaseDataVariableType'):
+                item_type = 'sensor'
+            elif item_class == item_name:
+                item_type = 'object'
+            elif item_class in ('BaseObjectType', 'Non-Rotating Machine'):
+                item_type = 'object'
+            else:
+                item_type = item_class
+
+            record = (sys1_id, item_class, item_type, gv_user_id)
+            curs.execute(sql, record)
+
+            sql = 'select ITEM_TYPE from SDA_NODE_ITEM_TYPE where SYS1_ID = %s and ITEM_CLASS = %s'
+            record = (sys1_id, item_class)
+            curs.execute(sql, record)
+            item_type = curs.fetchone()
+
+        return item_type
+
+    # using endpoint_url find SYS1_ID
+    def search_sys1_id(self, curs, endpoint_url):
+        # print('endpoint_url : ', endpoint_url, type(endpoint_url))
+
+        # search SYS1 ID
+        sql = 'select SYS1_ID from SDA_SYS1_LIST where ENDPOINT_URL = %s'
+        record = endpoint_url
+        curs.execute(sql, record)
+        sys1_id = curs.fetchone()
+        search_cnt = curs.rowcount
+
+        # if not found
+        if search_cnt == 0:
+            sql = "insert into SDA_SYS1_LIST(ENDPOINT_URL, CREATE_DT, CREATE_USER_ID) " \
+                  "select %s, NOW(), %s"
+            record = (endpoint_url, gv_user_id)
+            curs.execute(sql, record)
+
+            self.conn.commit()
+
+            sql = 'select SYS1_ID from SDA_SYS1_LIST where ENDPOINT_URL = %s'
+            record = endpoint_url
+            curs.execute(sql, record)
+            sys1_id = curs.fetchone()
+
+        # print('sys1_id : ', type(sys1_id), sys1_id, sys1_id[0])
+
+        return str(sys1_id[0]).zfill(2)
 
     def get_node_attrs(self, node):
         if not isinstance(node, SyncNode):
@@ -1531,7 +1551,6 @@ class MainWindow(QMainWindow):
         msg.exec_()
 
     def subscribe_datachange(self, node, handler):
-        print('MainWindow', type(node), node)
         if not self._datachange_sub:
             self._datachange_sub = self.client.create_subscription(500, handler)
         handle = self._datachange_sub.subscribe_data_change(node)
