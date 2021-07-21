@@ -1,3 +1,4 @@
+import configparser
 import sys
 import logging
 from datetime import datetime, timedelta, timezone
@@ -18,25 +19,51 @@ import pymysql
 import base64
 
 logger = logging.getLogger(__name__)
+
 gv_sys1_id = 0
 gv_user_id = 'EDGE'
+gv_db_conn_info = {}
+
 # TODO ini 설정파일에서 읽기
+gv_ini_file_name = 'config.ini'
 gv_write_interval = 120
+gv_tree_log_file_name = 'tree'
+gv_static_log_file_name = 'static'
+gv_dynamic_log_file_name = 'dynamic'
 
 
 class MysqlDBConn:
 
     def __init__(self, dbServer):
-        # TODO dbServer = 'dev', 'prd', 'local'
-        #      ini 파일 읽기
 
-        hostIp = '10.178.59.59'
-        port = 3666
-        userNm = 'dacardev'
-        passWd = 'dacardev!@#!@#'
-        iniDbName = 'dacardev'
+        self.read_config()
+
+        hostIp = gv_db_conn_info['hostIp']
+        port = int(gv_db_conn_info['port'])
+        userNm = gv_db_conn_info['userNm']
+        passWd = gv_db_conn_info['passWd']
+        dbName = gv_db_conn_info['dbName']
+
         self.conn = pymysql.connect(host=hostIp, port=port, user=userNm, password=passWd,
-                                    db=iniDbName, charset='utf8mb4')
+                                    db=dbName, charset='utf8mb4')
+
+    def read_config(self):
+        global gv_db_conn_info
+
+        config_file = configparser.ConfigParser()
+        if config_file.read(gv_ini_file_name, encoding='utf-8'):
+
+            if config_file.has_section('DB'):
+                if config_file.has_section('DEV'):
+                    gv_db_conn_info['hostIp'] = config_file['DEV']['hostIp']
+                    gv_db_conn_info['port'] = config_file['DEV']['port']
+                    gv_db_conn_info['userNm'] = config_file['DEV']['userNm']
+                    gv_db_conn_info['passWd'] = config_file['DEV']['passWd']
+                    gv_db_conn_info['dbName'] = config_file['DEV']['dbName']
+        else:
+            print('ini file not found!!')
+
+        # print(' after read config file : ', gv_db_conn_info)
 
 
 class DataChangeHandler(QObject):
@@ -88,12 +115,25 @@ class DataChangeHandler(QObject):
 
                     curs.execute(sql, record)
                     self.conn.commit()
-                    print('dynamic insert ok', datetime.now(), measurement_id, measurement_name)
                     # TODO 로그파일에 쓰기, 화면 하단 log 에 출력하기
+                    # TODO 10분 단위 데이터 개수 확인
                     logger.info(('dynamic insert ok', datetime.now(), measurement_id, measurement_name))
+
+                    # print('dynamic insert ok', datetime.now(), measurement_id, measurement_name)
+                    dynamic_log_file_name = gv_dynamic_log_file_name + '_' + \
+                                           datetime.now().date().strftime('%Y%m%d') + '.log'
+                    with open(dynamic_log_file_name, 'a', encoding='utf-8') as logfile:
+                        logfile.writelines(
+                            datetime.now().strftime('%Y%m%d%H%M%S') +
+                            ' dynamic data insert : ' + str(measurement_id) + ' ' + measurement_name + '\n')
 
                 except Exception as e:
                     print('dynamic data INSERT error occurred : ', e, sql)
+                    dynamic_log_file_name = gv_dynamic_log_file_name + '_' + \
+                                           datetime.now().date().strftime('%Y%m%d') + '.log'
+                    with open(dynamic_log_file_name, 'a', encoding='utf-8') as logfile:
+                        logfile.writelines(
+                            datetime.now().strftime('%Y%m%d%H%M%S') + '  dynamic data INSERT error occured ' + e + '\n')
 
         else:
             # print('trend', node, data)
@@ -106,8 +146,21 @@ class DataChangeHandler(QObject):
                     # 2분에 1번 쓰기
                     # 입력시간 조건이 되었는지와 입력된 건인지 비교하여 데이터 INSERT 수행
                     if self.cur_update_time - self.last_update_time >= timedelta(seconds=gv_write_interval):
+                        write_cnt = len(self.inserted_data)
+
+                        print(datetime.now().strftime('%Y%m%d%H%M%S') + ' static insert count ' + str(write_cnt))
+
+                        static_log_file_name = gv_static_log_file_name + '_' + \
+                                               datetime.now().date().strftime('%Y%m%d') + '.log'
+                        with open(static_log_file_name, 'a', encoding='utf-8') as logfile:
+                            logfile.writelines(
+                                datetime.now().strftime('%Y%m%d%H%M%S') +
+                                ' static insert count ' + str(write_cnt) + '\n')
+
+                        # Item List 초기화
                         self.inserted_data.clear()
                         self.last_update_time = self.cur_update_time
+
                     elif str(node.nodeid) in self.inserted_data:
                         pass
                     else:
@@ -123,12 +176,20 @@ class DataChangeHandler(QObject):
                         self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
 
                         self.conn.commit()
-                        print('static insert ok', datetime.now(), measurement_id, measurement_name, val)
-                        # TODO 로그파일에 쓰기, 화면 하단 log 에 출력하기
+                        # TODO 화면 하단 log 에 출력하기
                         logger.info(('static insert ok', datetime.now(), measurement_id, measurement_name))
+
+                        # print(datetime.now().strftime('%Y%m%d%H%M%S'), '  static insert ok',
+                        #       measurement_id, measurement_name, val)
 
                 except Exception as e:
                     print('static data INSERT error occured : ', e)
+
+                    static_log_file_name = gv_static_log_file_name + '_' + \
+                                           datetime.now().date().strftime('%Y%m%d') + '.log'
+                    with open(static_log_file_name, 'a', encoding='utf-8') as logfile:
+                        logfile.writelines(
+                            datetime.now().strftime('%Y%m%d%H%M%S') + '  static data INSERT error occured ' + e + '\n')
 
     # using NodeID find ITEM_ID
     def search_item_id(self, curs, sys1_id, node_id):
@@ -805,25 +866,6 @@ class MainWindow(QMainWindow):
         #############################
         #############################
 
-        # setup QSettings for application and get a settings object
-        QCoreApplication.setOrganizationName("SKCC")
-        QCoreApplication.setApplicationName("OpcUaClient")
-        self.settings = QSettings()
-
-        self._address_list = self.settings.value("address_list",
-                                                 ["opc.tcp://10.178.59.49:7560/", "opc.tcp://localhost:4840", ])
-        self._address_list_max_count = int(self.settings.value("address_list_max_count", 5))
-
-        # init widgets
-        # for i, addr in enumerate(self._address_list):
-        #     self.addrComboBox.insertItem(i, addr)
-        self.addrComboBox.addItems(self._address_list)
-
-        #################################################
-        #################################################
-
-        # self.uaclient = Client()
-
         self.tree_ui = tree_widget.TreeWidget(self.treeView)
         self.tree_ui.error.connect(self.show_error)
         self.setup_context_menu_tree()
@@ -848,19 +890,43 @@ class MainWindow(QMainWindow):
         self.attrs_ui = attrs_widget.AttrsWidget(self.attrView)
         self.attrs_ui.error.connect(self.show_error)
 
+        #################################################
+        #################################################
+
+        self.conn = None
+
+        # DB connect
+        self.connect_db()
+
+        # setup QSettings for application and get a settings object
+        QCoreApplication.setOrganizationName("SKCC")
+        QCoreApplication.setApplicationName("OpcUaClient")
+        self.settings = QSettings()
+
+        # read System1 list
+        address_list = self.read_sys1_list()
+
+        self._address_list = self.settings.value("address_list", address_list)
+        self._address_list_max_count = int(self.settings.value("address_list_max_count", 5))
+
+        # init widgets
+        # for i, addr in enumerate(self._address_list):
+        #     self.addrComboBox.insertItem(i, addr)
+        self.addrComboBox.addItems(self._address_list)
+
         # TODO 동작 안함
         self.addrComboBox.currentTextChanged.connect(self._uri_changed)
         self._uri_changed(self.addrComboBox.currentText())  # force update for current value at startup
 
         # TODO 동작 안함
         # print(int(self.settings.value("main_window_width", 1000)), int(self.settings.value("main_window_height", 800)))
-        self.resize(int(self.settings.value("main_window_width", 1000)),
-                    int(self.settings.value("main_window_height", 800)))
+        self.resize(int(self.settings.value("main_window_width", 1200)),
+                    int(self.settings.value("main_window_height", 900)))
         data = self.settings.value("main_window_state", None)
         if data:
             self.restoreState(data)
 
-        ##############################
+        ##########################################
 
         self.client = None
         self._connected = False
@@ -874,7 +940,6 @@ class MainWindow(QMainWindow):
         self.certificate_path = None
         self.private_key_path = None
 
-        self.conn = None
         self.datachange_ui = None
         self.event_ui = None
 
@@ -935,16 +1000,39 @@ class MainWindow(QMainWindow):
         self.actionDark_Mode.setText(_translate("MainWindow", "Dark Mode"))
         self.actionDark_Mode.setStatusTip(_translate("MainWindow", "Enables Dark Mode Theme"))
 
-    @trycatchslot
-    def connect(self):
+    def connect_db(self):
 
-        # 1. check EDGE DB connection
+        # check EDGE DB connection
         try:
             self.conn = MysqlDBConn('dev').conn
         except Exception as e:
             print('MainWindow : DB Conn Error -- ', e)
 
-        # 2. connect System1 Server
+    def read_sys1_list(self):
+
+        sys1_address_list = []
+
+        # search sys1_address
+        with self.conn.cursor() as curs:
+            try:
+                sql = "select ENDPOINT_URL from SDA_SYS1_LIST where USE_YN = 'Y' order by CREATE_DT desc"
+                curs.execute(sql)
+                address_list = curs.fetchall()
+                # print(address_list)
+                for address in address_list:
+                    sys1_address_list.append(address[0])
+
+            except Exception as e:
+                print('search sys1 endpoint url error occurred : ', e)
+
+        return sys1_address_list
+
+    @trycatchslot
+    def connect(self):
+        # DB 연결 여부 확인
+        self.conn.ping(True)
+
+        # connect System1 Server
         endpoint_url = self.addrComboBox.currentText()
         endpoint_url = endpoint_url.strip()
         try:
@@ -1036,10 +1124,10 @@ class MainWindow(QMainWindow):
         self.treeView.expandToDepth(0)
 
         child_node = root_node.get_children_descriptions()
-        print('ROOT CHILD desc : ', len(child_node), child_node)
+        # print('ROOT CHILD desc : ', len(child_node), child_node)
 
         for node in child_node[:2]:
-            print(node.DisplayName.Text, node.NodeId, node)
+            print(node.DisplayName.Text)
             if 'Devices' in node.DisplayName.Text:
                 gubun = 'D'
                 # Machines 만 하위 item 처리함
@@ -1116,6 +1204,7 @@ class MainWindow(QMainWindow):
 
         # DB 연결 여부 확인
         self.conn.ping(True)
+
         with self.conn.cursor() as curs:
             try:
                 sql = 'delete from SDA_ITEM_SET_POINT where SYS1_ID = %s'
@@ -1170,7 +1259,7 @@ class MainWindow(QMainWindow):
                 node = self.client.get_node(item[1])
                 self.datachange_ui._subscribe(node)
 
-            # TODO setpoint 정보가 바뀌었을 때도 datachange 에 값이 오는지 확인
+            # TODO setpoint 정보가 바뀌었을 때도 subscribe 해 놓으면 datachange 에 값이 온
 
         # print(' ### item setpoint ###')
         # for item in self.itemSetPointList:
