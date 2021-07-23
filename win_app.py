@@ -18,7 +18,12 @@ from uawidgets.utils import trycatchslot
 import pymysql
 import base64
 
-logger = logging.getLogger(__name__)
+logger = None
+t_logger = None
+d_logger = None
+s_logger = None
+e_logger = None
+c_logger = None  # only console
 
 gv_sys1_id = 0
 gv_user_id = 'EDGE'
@@ -32,11 +37,13 @@ gv_write_interval = 120
 gv_dynamic_write_interval = 600
 
 # 로그 파일명
-gv_tree_log_file_name = 'log/tree'
-gv_static_log_file_name = 'log/static'
-gv_dynamic_log_file_name = 'log/dynamic'
-gv_event_log_file_name = 'log/event'
-gv_etc_log_file_name = 'log/etc'
+gv_log_folder = 'log'
+gv_main_log_file_name = 'main'
+gv_tree_log_file_name = 'tree'
+gv_static_log_file_name = 'static'
+gv_dynamic_log_file_name = 'dynamic'
+gv_event_log_file_name = 'event'
+gv_etc_log_file_name = 'etc'
 
 
 class MysqlDBConn:
@@ -95,9 +102,7 @@ class DataChangeHandler(QObject):
         try:
             self.conn = MysqlDBConn('dev').conn
         except Exception as e:
-            print('DataChangeHandler : DB Conn Error -- ', e)
-            msg = datetime.now().strftime('%Y%m%d%H%M%S') + 'DataChangeHandler : DB Conn Error -- ' + e + '\n'
-            self.write_log_data('dynamic', msg)
+            logger.info('DataChangeHandler : DB Conn Error -- ' + str(e))
 
     def datachange_notification(self, node, val, data):
         # print(' datachange_notification start ', node, val, data.monitored_item.Value.SourceTimestamp)
@@ -123,16 +128,14 @@ class DataChangeHandler(QObject):
                     # 로그에 10분간의 건수 작성
                     self.dynamic_cur_update_time = datetime.now()
                     # 10분에 1번 건수 쓰기
-                    print(self.dynamic_cur_update_time - self.dynamic_last_update_time,
-                          timedelta(seconds=gv_dynamic_write_interval), val.MeasurementId)
+                    # print(self.dynamic_cur_update_time - self.dynamic_last_update_time,
+                    #       timedelta(seconds=gv_dynamic_write_interval), val.MeasurementId)
                     if self.dynamic_cur_update_time - self.dynamic_last_update_time >= \
                             timedelta(seconds=gv_dynamic_write_interval):
                         write_cnt = len(self.dynamic_inserted_data)
-                        print(datetime.now().strftime('%Y%m%d%H%M%S') + ' dynamic insert count ' + str(write_cnt))
 
-                        msg = datetime.now().strftime('%Y%m%d%H%M%S') + \
-                              ' ### dynamic insert count ' + str(write_cnt) + '\n'
-                        self.write_log_data('dynamic', msg)
+                        msg = ' ### dynamic insert count ' + str(write_cnt)
+                        d_logger.info(msg)
 
                         # Item List 초기화
                         self.dynamic_inserted_data.clear()
@@ -161,19 +164,16 @@ class DataChangeHandler(QObject):
                     self.dynamic_inserted_data[str(node.nodeid)] = len(self.dynamic_inserted_data) + 1
 
                     # TODO 화면 하단 log 에 출력하기
-                    logger.info(('dynamic insert ok', datetime.now(), measurement_id, measurement_name))
+                    # logger.info('dynamic insert ok', measurement_id, measurement_name)
 
                     # 건별로 파일에 작성
                     # print('dynamic insert ok', datetime.now(), measurement_id, measurement_name)
-                    msg = datetime.now().strftime('%Y%m%d%H%M%S') + \
-                          ' dynamic data insert : ' + str(measurement_id) + ' ' + measurement_name + '\n'
-                    self.write_log_data('dynamic', msg)
+                    msg = ' dynamic data insert : ' + str(measurement_id) + ' ' + measurement_name
+                    d_logger.info(msg)
 
                 except Exception as e:
-                    print('dynamic data INSERT error occurred : ', e, sql)
-
-                    msg = datetime.now().strftime('%Y%m%d%H%M%S') + ' dynamic data INSERT error occured ' + e + '\n'
-                    self.write_log_data('static', msg)
+                    msg = ' dynamic data INSERT error occured ' + str(e)
+                    self.d_logger.info(msg)
 
         else:
             # print('trend', node, data)
@@ -188,11 +188,9 @@ class DataChangeHandler(QObject):
                     if self.cur_update_time - self.last_update_time >= timedelta(seconds=gv_write_interval):
                         write_cnt = len(self.inserted_data)
 
-                        print(datetime.now().strftime('%Y%m%d%H%M%S') + ' static insert count ' + str(write_cnt))
-
-                        msg = datetime.now().strftime('%Y%m%d%H%M%S') + \
-                              ' ### static insert count ' + str(write_cnt) + '\n'
-                        self.write_log_data('static', msg)
+                        # print(datetime.now().strftime('%Y%m%d%H%M%S') + ' static insert count ' + str(write_cnt))
+                        msg = ' ### static insert count ' + str(write_cnt)
+                        s_logger.info(msg)
 
                         # Item List 초기화
                         self.inserted_data.clear()
@@ -215,16 +213,14 @@ class DataChangeHandler(QObject):
                         self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
 
                         # TODO 화면 하단 log 에 출력하기
-                        logger.info(('static insert ok', datetime.now(), measurement_id, measurement_name))
+                        # logger.info('static insert ok : ' + str(measurement_id) + measurement_name)
 
                         # print(datetime.now().strftime('%Y%m%d%H%M%S'), '  static insert ok',
                         #       measurement_id, measurement_name, val)
 
                 except Exception as e:
-                    print('static data INSERT error occured : ', e)
-
-                    msg = datetime.now().strftime('%Y%m%d%H%M%S') + ' static data INSERT error occured ' + e + '\n'
-                    self.write_log_data('static', msg)
+                    msg = ' static data INSERT error occured ' + str(e)
+                    s_logger.info(msg)
 
     # using NodeID find ITEM_ID
     def search_item_id(self, curs, sys1_id, node_id):
@@ -238,24 +234,6 @@ class DataChangeHandler(QObject):
         # search_cnt = curs.rowcount
 
         return item_id, p_item_id, l1_item_id, item_name
-
-    # write log
-    def write_log_data(self, type, msg):
-        if type == 'static':
-            log_file_name = gv_static_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        elif type == 'dynamic':
-            log_file_name = gv_dynamic_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        elif type == 'tree':
-            log_file_name = gv_tree_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        else:
-            log_file_name = gv_etc_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-
-        with open(log_file_name, 'a', encoding='utf-8') as logfile:
-            logfile.writelines(msg)
 
 
 class DataChangeUI(object):
@@ -599,6 +577,20 @@ class EventUI(object):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        global logger
+        logger = self.make_logger("main", "main")
+        logger.info('### main process started ###')
+
+        global t_logger
+        t_logger = self.make_logger("tree", "tree")
+        global s_logger
+        s_logger = self.make_logger("static", "static")
+        global d_logger
+        d_logger = self.make_logger("dynamic", "dynamic")
+        global e_logger
+        e_logger = self.make_logger("event", "event")
+
         self.setGeometry(100, 300, 300, 200)
         self.setWindowTitle("OPC UA Trans")
 
@@ -1059,8 +1051,12 @@ class MainWindow(QMainWindow):
         # check EDGE DB connection
         try:
             self.conn = MysqlDBConn('dev').conn
+            logger.info('### connected to DB ###')
+
         except Exception as e:
-            print('MainWindow : DB Conn Error -- ', e)
+            # print('MainWindow : DB Conn Error -- ', e)
+            logger.error('MainWindow : DB Conn Error -- ' + str(e))
+            sys.exit('finished due to DB Connection Error')
 
     def read_sys1_list(self):
 
@@ -1077,7 +1073,8 @@ class MainWindow(QMainWindow):
                     sys1_address_list.append(address[0])
 
             except Exception as e:
-                print('search sys1 endpoint url error occurred : ', e)
+                # print('search sys1 endpoint url error occurred : ', e)
+                logger.error('search sys1 endpoint url error occurred' + str(e))
 
         return sys1_address_list
 
@@ -1089,6 +1086,7 @@ class MainWindow(QMainWindow):
         # connect System1 Server
         endpoint_url = self.addrComboBox.currentText()
         endpoint_url = endpoint_url.strip()
+
         try:
             global gv_sys1_id
 
@@ -1097,17 +1095,18 @@ class MainWindow(QMainWindow):
                     gv_sys1_id = self.search_sys1_id(curs, endpoint_url)
 
                 except Exception as e:
-                    print('search sys1 id error occurred : ', e)
+                    logger.error('search sys1 id error occurred : ' + str(e))
 
             self.client = Client(endpoint_url)
             self.client.connect()
+            logger.info('### connected to System1 ( ' + endpoint_url + ' )')
 
             # client 연결 후 초기화 시킴
             self.datachange_ui = DataChangeUI(self, self.client)
             self.event_ui = EventUI(self, self.client)
 
-        except Exception as ex:
-            self.show_error(ex)
+        except Exception as e:
+            logger.error('System1 Connection Error occurred')
             raise
 
         self._update_address_list(endpoint_url)
@@ -1115,9 +1114,9 @@ class MainWindow(QMainWindow):
         # ExtensionObject 의 DynamicDataType 정의 불러오기
         self.client.load_type_definitions()
         # self.client.load_enums()
-        print('start : ', datetime.now())
+        # print('start : ', datetime.now())
         self.retrieve_tree()
-        print('end : ', datetime.now())
+        # print('end : ', datetime.now())
 
         # insert tree item to db
         self.insert_tree_items()
@@ -1170,7 +1169,7 @@ class MainWindow(QMainWindow):
                         item_name = c_node.DisplayName.Text
                         gubun = ''
                         p_nodeId = ''
-                        print('folder insert : ', item_type, nodeId, item_name, self.level, disp_ord, gubun)
+                        # print('folder insert : ', item_type, nodeId, item_name, self.level, disp_ord, gubun)
                         self.treeList.append([item_type, nodeId, item_name, self.level, disp_ord, gubun, p_nodeId])
 
         self.tree_ui.set_root_node(root_node)
@@ -1181,7 +1180,7 @@ class MainWindow(QMainWindow):
         # print('ROOT CHILD desc : ', len(child_node), child_node)
 
         for node in child_node[:2]:
-            print(node.DisplayName.Text)
+            t_logger.info(node.DisplayName.Text)
             if 'Devices' in node.DisplayName.Text:
                 gubun = 'D'
                 # Machines 만 하위 item 처리함
@@ -1197,10 +1196,10 @@ class MainWindow(QMainWindow):
     # Hierachy 정보 insert
     def insert_tree_items(self):
 
-        msg = '################################################\n' \
+        msg = '\n################################################\n' \
               'START TREE DATA COLLECTION (' + datetime.now().strftime('%Y%m%d %H%M%S') + ') \n' \
               '################################################\n'
-        self.write_log_data('tree', msg)
+        t_logger.info(msg)
 
         # DB 연결 여부 확인
         self.conn.ping(True)
@@ -1212,14 +1211,15 @@ class MainWindow(QMainWindow):
                 self.conn.commit()
 
             except Exception as e:
-                print('TREE DATA DELETE error occured : ', e)
+                # print('TREE DATA DELETE error occured : ', e)
+                t_logger.error('TREE DATA DELETE error occured : ', str(e))
 
         l1_item_id = 0
         l2_item_id = 0
 
         for item in self.treeList:
-            print(item)
-            self.write_log_data('tree', str(item) + '\n')
+            # print(item)
+            t_logger.info(str(item))
 
             with self.conn.cursor() as curs:
                 try:
@@ -1257,7 +1257,7 @@ class MainWindow(QMainWindow):
                     self.conn.commit()
 
                 except Exception as e:
-                    print('TREE DATA INSERT error occurred : ', e)
+                    t_logger.error('TREE DATA INSERT error occured : ', str(e))
 
     # SetPoint 정보 insert
     def insert_item_setpoint(self):
@@ -1272,12 +1272,11 @@ class MainWindow(QMainWindow):
                 self.conn.commit()
 
             except Exception as e:
-                print('ITEM SET POINT DATA DELETE error occured : ', e)
+                t_logger.error('TREE DATA DELETE error occured : ', str(e))
 
         for item in self.itemSetPointList:
             # print(item[0], type(item[0]), item)
-
-            self.write_log_data('tree', str(item) + '\n')
+            t_logger.info(str(item))
 
             with self.conn.cursor() as curs:
                 try:
@@ -1308,26 +1307,26 @@ class MainWindow(QMainWindow):
                     self.conn.commit()
 
                 except Exception as e:
-                    print('ITEM SET POINT DATA INSERT error occured : ', e)
+                    t_logger.error('TREE DATA INSERT error occured : ', str(e))
 
     # Static, Dynamic Data Change subscribe
     def subscribe_all_items(self):
 
-        msg = '################################################\n' \
+        msg = '\n################################################\n' \
               'START STATIC DATA COLLECTION (' + datetime.now().strftime('%Y%m%d %H%M%S') + ') \n' \
               '################################################\n'
-        self.write_log_data('static', msg)
+        s_logger.info(msg)
 
-        msg = '################################################\n' \
+        msg = '\n################################################\n' \
               'START DYNAMIC DATA COLLECTION (' + datetime.now().strftime('%Y%m%d %H%M%S') + ') \n' \
               '################################################\n'
-        self.write_log_data('dynamic', msg)
+        d_logger.info(msg)
 
         # print(' item Tree list')
         for item in self.treeList:
 
             if item[0] in ('AnalogItemType', 'BaseDataVariableType') and item[5] == 'M':
-                print('subscribe item : ', item)
+                # print('subscribe item : ', item)
                 node = self.client.get_node(item[1])
                 self.datachange_ui._subscribe(node)
 
@@ -1340,10 +1339,10 @@ class MainWindow(QMainWindow):
     # Event subscribe
     def subscribe_all_events(self):
 
-        msg = '################################################\n' \
+        msg = '\n################################################\n' \
               'START EVENT DATA COLLECTION (' + datetime.now().strftime('%Y%m%d %H%M%S') + ') \n' \
               '################################################\n'
-        self.write_log_data('event', msg)
+        e_logger.info(msg)
 
         print(self.treeList[1][1], '  ', self.treeList[1])
         node = self.client.get_node(self.treeList[1][1])
@@ -1392,7 +1391,8 @@ class MainWindow(QMainWindow):
                     item_type = c_node.DisplayName.Text
 
                     if item_type not in self.type_def:
-                        print('type_definition : ', item_type, ' - ', c_node)
+                        # print('type_definition : ', item_type, ' - ', c_node)
+                        t_logger.info('type_definition : ' + str(item_type) + ' - ' + str(c_node))
                         self.type_def.append(item_type)
 
                 # print('1-', item_type, c_node.ReferenceTypeId.Identifier, str_type_def)
@@ -1491,7 +1491,9 @@ class MainWindow(QMainWindow):
 
     def disconnect(self):
         try:
+
             self.client.disconnect()
+            logger.info(' disconnected from System1 ')
         finally:
             self._reset()
 
@@ -1545,29 +1547,60 @@ class MainWindow(QMainWindow):
 
         return item_id
 
-    # write log
-    def write_log_data(self, type, msg):
+    def make_logger(self, type, name=None):
+        os.makedirs('./log', exist_ok=True)
 
-        # TODO log 쓰기 전에 폴더가 있는지 확인해서 없으면 생성하기
-        # cwd = os.getcwd()
-        # print(cwd)
-        # os.mkdir(cwd, 'log1')
-
-        if type == 'static':
-            log_file_name = gv_static_log_file_name + '_' + \
+        if type == 'main':
+            log_file_name = './' + gv_log_folder + '/' + gv_main_log_file_name + '_' + \
+                            datetime.now().date().strftime('%Y%m%d') + '.log'
+        elif type == 'static':
+            log_file_name = './' + gv_log_folder + '/' + gv_static_log_file_name + '_' + \
                             datetime.now().date().strftime('%Y%m%d') + '.log'
         elif type == 'dynamic':
-            log_file_name = gv_dynamic_log_file_name + '_' + \
+            log_file_name = './' + gv_log_folder + '/' + gv_dynamic_log_file_name + '_' + \
                             datetime.now().date().strftime('%Y%m%d') + '.log'
         elif type == 'tree':
-            log_file_name = gv_tree_log_file_name + '_' + \
+            log_file_name = './' + gv_log_folder + '/' + gv_tree_log_file_name + '_' + \
                             datetime.now().date().strftime('%Y%m%d') + '.log'
+        elif type == 'event':
+            log_file_name = './' + gv_log_folder + '/' + gv_tree_log_file_name + '_' + \
+                            datetime.now().date().strftime('%Y%m%d') + '.log'
+        elif type == 'console':
+            pass
         else:
-            log_file_name = gv_etc_log_file_name + '_' + \
+            log_file_name = './' + gv_log_folder + '/' + gv_etc_log_file_name + '_' + \
                             datetime.now().date().strftime('%Y%m%d') + '.log'
 
-        with open(log_file_name, 'a', encoding='utf-8') as logfile:
-            logfile.writelines(msg)
+        # 1 logger instance를 만든다.
+        logger = logging.getLogger(name)
+
+        # 2 logger의 level을 가장 낮은 수준인 DEBUG로 설정해둔다.
+        logger.setLevel(logging.DEBUG)
+
+        # 3 formatter 지정
+        formatter = logging.Formatter("[%(asctime)s] - %(name)s - %(levelname)s - %(message)s")
+
+        # 4 handler instance 생성
+        console = logging.StreamHandler()
+        if type != 'console':
+            file_handler = logging.FileHandler(filename=log_file_name)
+
+        # 5 handler 별로 다른 level 설정
+        console.setLevel(logging.INFO)
+        if type != 'console':
+            file_handler.setLevel(logging.DEBUG)
+
+        # 6 handler 출력 format 지정
+        console.setFormatter(formatter)
+        if type != 'console':
+            file_handler.setFormatter(formatter)
+
+        # 7 logger에 handler 추가
+        logger.addHandler(console)
+        if type != 'console':
+            logger.addHandler(file_handler)
+
+        return logger
 
     # using ItemClass find ItemType
     def search_item_type(self, curs, sys1_id, item_name, item_class):
@@ -1788,7 +1821,7 @@ class MainWindow(QMainWindow):
         print('Event UnSubscribed !!')
 
     def show_error(self, msg):
-        logger.warning("showing error: %s", msg)
+        logger.error("showing error: %s", msg)
         self.statusBar.show()
         self.statusBar.setStyleSheet("QStatusBar { background-color : red; color : black; }")
         self.statusBar.showMessage(str(msg))
