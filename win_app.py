@@ -347,17 +347,24 @@ class EventHandler(QObject):
         print(' status_change_notification start ', type(status), status)
 
     def event_notification(self, event):
-        print(' event_notification start ', type(event), event)
-        print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
-              ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text,
-              event.ActiveState.Text,
-              ' AckedState : ', event.AckedState.Text)
+        print(' event_notification start ', event.EventType, type(event.EventType), event)
+        # print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
+        #       ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text,
+        #       event.ActiveState.Text,
+        #       ' AckedState : ', event.AckedState.Text)
+
+        if event.EventType == "i=2789":
+            print(' refresh : ', event.Text)   # Address space and nodes updated.
+        elif event.EventType == "i=2787":
+            print(' refresh start: ', event.Text)
+        elif event.EventType == "i=2788":
+            print(' refresh end: ', event.Text)
 
         # TODO ConditionId 표시되도록 수정
         # TODO RefreshStartEvent 실행
         # TODO ack 와 unack 시 공통 로직 추출
 
-        if event.AckedState.Text == 'Acknowledged':
+        elif event.AckedState.Text == 'Acknowledged':
             # pass
 
             print('acked')
@@ -422,7 +429,7 @@ class EventHandler(QObject):
                 except Exception as e:
                     print('EVENT DATA INSERT error occurred : ', e)
 
-        else:
+        elif event.AckedState.Text == 'Unacknowledged':
             print('un acked')
             # DB 연결 여부 확인
             self.conn.ping(True)
@@ -485,8 +492,11 @@ class EventHandler(QObject):
 
                 except Exception as e:
                     print('EVENT DATA INSERT error occurred : ', e)
-
             self.event_fired.emit(event)
+
+        else:
+            print('other case : ', event)
+
 
     # using NodeID find ITEM_ID
     def search_item_id(self, curs, sys1_id, node_id):
@@ -1128,7 +1138,7 @@ class MainWindow(QMainWindow):
         self.subscribe_all_items()
 
         # subscribe events
-        # self.subscribe_all_events()
+        self.subscribe_all_events()
 
     # Tree 항목들을 조회후 펼치기
     def retrieve_tree(self):
@@ -1182,9 +1192,10 @@ class MainWindow(QMainWindow):
         for node in child_node[:2]:
             t_logger.info(node.DisplayName.Text)
             if 'Devices' in node.DisplayName.Text:
-                gubun = 'D'
-                # Machines 만 하위 item 처리함
-                self.get_child_node2([str(node.NodeId)], gubun, self.level + 1, disp_ord, nodeId)
+                continue
+                # gubun = 'D'
+                # # Machines 만 하위 item 처리함
+                # self.get_child_node2([str(node.NodeId)], gubun, self.level + 1, disp_ord, nodeId)
             else:
                 gubun = 'M'
                 self.get_child_node2([str(node.NodeId)], gubun, self.level + 1, disp_ord, nodeId)
@@ -1780,22 +1791,12 @@ class MainWindow(QMainWindow):
         if not self._event_sub:
             self._event_sub = self.client.create_subscription(500, handler)
 
-        # myevent = root_node.get_child(["0:Types", "0:EventTypes", "0:BaseEventType", "0:ConditionType"])
-        # myevent = self.client.nodes.root.get_child(["0:Types", "0:EventTypes", "0:BaseEventType", "0:ConditionType",
-        #                                "0:AcknowledgeableConditionType", "0:AlarmConditionType", "0:LimitAlarmType",
-        #                                "0:NonExclusiveLimitAlarmType", "0:NonExclusiveLevelAlarmType",
-        #                                # "2:System1NonExclusiveLevelAlarmType",
-        #                                             ])
-
-        # print(' myevent :', myevent, type(myevent))
-        # print(' get_variables : ', myevent.get_variables())
-        # print(' get_properties : ', myevent.get_properties())
-
-        # 기본 이벤트 항목 호출
-        # handle = self._event_sub.subscribe_events()
-        evtypes = [ua.ObjectIds.RefreshRequiredEventType, ua.ObjectIds.RefreshStartEventType,
-                   ua.ObjectIds.LimitAlarmType, ua.ObjectIds.NonExclusiveLevelAlarmType]
-        # evtypes = [myevent.nodeid.Identifier]
+        # TODO event refresh, system event 받아오기
+        evtypes = [ua.ObjectIds.RefreshRequiredEventType,
+                   ua.ObjectIds.RefreshStartEventType, ua.ObjectIds.RefreshEndEventType,
+                   # ua.ObjectIds.SystemHealthEventType,
+                   ua.ObjectIds.NonExclusiveLevelAlarmType]
+        print('evtypes : ', evtypes)
         handle = self._event_sub.subscribe_events(evtypes=evtypes)
         # select_event_attributes_from_type_node
         # subscribe_alarms_and_conditions
@@ -1803,7 +1804,7 @@ class MainWindow(QMainWindow):
 
         # 해당 항목이나 이건 실행시 오류가 남
         # handle = self._event_sub.subscribe_events(evtypes=ua.ObjectIds.System1NonExclusiveLevelAlarmType)
-        print('check :: ', type(self._event_sub))
+        # print('check :: ', type(self._event_sub), handle)
         self._subs_event[node.nodeid] = handle
         print('MainWindow Event Subscribed !!')
         return handle
