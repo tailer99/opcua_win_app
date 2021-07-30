@@ -347,23 +347,25 @@ class EventHandler(QObject):
         print(' status_change_notification start ', type(status), status)
 
     def event_notification(self, event):
-        print(' event_notification start ', event.EventType, type(event.EventType), event)
+        print(' event_notification start ', event)
         # print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
         #       ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text,
         #       event.ActiveState.Text,
         #       ' AckedState : ', event.AckedState.Text)
 
-        if event.EventType == "i=2789":
-            print(' refresh : ', event.Text)   # Address space and nodes updated.
-        elif event.EventType == "i=2787":
-            print(' refresh start: ', event.Text)
-        elif event.EventType == "i=2788":
-            print(' refresh end: ', event.Text)
+        if str(event.EventType) == "i=2789":
+            e_logger.info(' refresh Required : ' + event.Message.Text)  # Address space and nodes updated.
+            # TODO RefreshStartEvent 실행
+            # TODO 이벤트가 두번 오는 거 확인, machine 만 subscribe 하는 걸로 체크
 
-        # TODO ConditionId 표시되도록 수정
-        # TODO RefreshStartEvent 실행
-        # TODO ack 와 unack 시 공통 로직 추출
+        elif str(event.EventType) == "i=2787":
+            e_logger.info(' refresh started : ' + event.Message.Text)
+            # TODO Refresh 될 때 기존 event 중 active 인거 모두 inactive 로 바꾸고 새로 받은 데이터만 active 로 처리해야 함
 
+        elif str(event.EventType) == "i=2788":
+            e_logger.info(' refresh complete : ' + event.Message.Text)
+
+        # TODO ack 는 나중에 로직 삭제하고 통과시켜야 함
         elif event.AckedState.Text == 'Acknowledged':
             # pass
 
@@ -373,7 +375,8 @@ class EventHandler(QObject):
 
             with self.conn.cursor() as curs:
                 try:
-                    event_id = base64.b64encode(event.EventId)
+                    # event id 는 계속 새로 나와서 source node 로 바꿈, table 컬럼명도 바꿔야 함
+                    event_id = event.SourceNode
 
                     measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
                     # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
@@ -398,9 +401,7 @@ class EventHandler(QObject):
                     point = machine_temp[machine_temp.rfind('>') + 1:]
                     machine = machine_temp[:machine_temp.rfind('>')]
 
-                    # TODO 값 찾기
-                    #      System1NonExclusiveLevelAlarmType 에 값이 있으나 조회가 안됨.
-                    trigger_value = 0
+                    trigger_value = event.TriggerValue
 
                     server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
 
@@ -409,7 +410,7 @@ class EventHandler(QObject):
                         sql = "insert into SDA_EVENT(SYS1_ID, EVENT_ID, POINT_ID, MEASUREMENT_ID, " \
                               "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
                               "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
-                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, %s, %s, NOW())"
                         record = (
                             gv_sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
                             machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
@@ -431,12 +432,16 @@ class EventHandler(QObject):
 
         elif event.AckedState.Text == 'Unacknowledged':
             print('un acked')
+
+            # TODO 아래 부분은 함수로 변경하여 refresh 일때도 호출 할 수 있도록 함
+
             # DB 연결 여부 확인
             self.conn.ping(True)
 
             with self.conn.cursor() as curs:
                 try:
-                    event_id = base64.b64encode(event.EventId)
+                    # event id 는 계속 새로 나와서 source node 로 바꿈, table 컬럼명도 바꿔야 함
+                    event_id = event.SourceNode
 
                     measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
                     # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
@@ -461,9 +466,7 @@ class EventHandler(QObject):
                     point = machine_temp[machine_temp.rfind('>') + 1:]
                     machine = machine_temp[:machine_temp.rfind('>')]
 
-                    # TODO 값 찾기
-                    #      System1NonExclusiveLevelAlarmType 에 값이 있으나 조회가 안됨.
-                    trigger_value = 0
+                    trigger_value = event.TriggerValue
 
                     server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
 
@@ -472,7 +475,7 @@ class EventHandler(QObject):
                         sql = "insert into SDA_EVENT(SYS1_ID, EVENT_ID, POINT_ID, MEASUREMENT_ID, " \
                               "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
                               "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
-                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, %s, %s, NOW())"
                         record = (
                             gv_sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
                             machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
@@ -1262,7 +1265,7 @@ class MainWindow(QMainWindow):
                           "SELECT %s, %s, %s, %s, " \
                           "       ifnull((SELECT ITEM_ID FROM SDA_TREE WHERE SYS1_ID = %s AND NODE_ID = %s AND gubun = %s),0), " \
                           "       %s, %s, %s, %s, %s, %s, NOW()"
-                    record = (item_id, item_name, item_type, item_level, gv_sys1_id, p_node_id, gubun,
+                    record = (item_id, item_name, item_type, item_level, gv_sys1_id, p_node_id, item[5],
                               display_ord, l1_item_id, l2_item_id, gv_sys1_id, node_id, gubun)
                     curs.execute(sql, record)
                     self.conn.commit()
@@ -1355,7 +1358,7 @@ class MainWindow(QMainWindow):
               '################################################\n'
         e_logger.info(msg)
 
-        print(self.treeList[1][1], '  ', self.treeList[1])
+        # print(self.treeList[1][1], '  ', self.treeList[1])
         node = self.client.get_node(self.treeList[1][1])
         self.event_ui._subscribe(node)
 
@@ -1463,7 +1466,7 @@ class MainWindow(QMainWindow):
 
             nodeId = str(node.nodeid)
             # next step 의 Parent Node Id
-            p_nodeId = nodeId
+            parent_nodeId = nodeId
             # icon_grp = str(node.read_node_class()).split('.')[1]
             item_name = node_attrs[0].Text
             item_type = ua.object_ids.ObjectIdNames[node.read_type_definition().Identifier]
@@ -1493,12 +1496,12 @@ class MainWindow(QMainWindow):
                 display_ord = gubun
             else:
                 display_ord = disp_ord + '_' + str(idx + 1).zfill(2)
-            # print('insert : ', item_type, guid, item_name, level, idx, gubun, p_nodeId)
+            # print('insert : ', item_type, nodeId, item_name, level, idx, gubun, p_nodeId)
             self.treeList.append([item_type, nodeId, item_name, level, display_ord, gubun, p_node])
 
             if len(next_node) > 0:
                 # print('child node : ', next_node)
-                self.get_child_node2(next_node, gubun, level + 1, display_ord, p_nodeId)
+                self.get_child_node2(next_node, gubun, level + 1, display_ord, parent_nodeId)
 
     def disconnect(self):
         try:
@@ -1574,7 +1577,7 @@ class MainWindow(QMainWindow):
             log_file_name = './' + gv_log_folder + '/' + gv_tree_log_file_name + '_' + \
                             datetime.now().date().strftime('%Y%m%d') + '.log'
         elif type == 'event':
-            log_file_name = './' + gv_log_folder + '/' + gv_tree_log_file_name + '_' + \
+            log_file_name = './' + gv_log_folder + '/' + gv_event_log_file_name + '_' + \
                             datetime.now().date().strftime('%Y%m%d') + '.log'
         elif type == 'console':
             pass
@@ -1794,19 +1797,23 @@ class MainWindow(QMainWindow):
         # TODO event refresh, system event 받아오기
         evtypes = [ua.ObjectIds.RefreshRequiredEventType,
                    ua.ObjectIds.RefreshStartEventType, ua.ObjectIds.RefreshEndEventType,
-                   # ua.ObjectIds.SystemHealthEventType,
+                   ua.ObjectIds.SystemEventType,
                    ua.ObjectIds.NonExclusiveLevelAlarmType]
         print('evtypes : ', evtypes)
         handle = self._event_sub.subscribe_events(evtypes=evtypes)
-        # select_event_attributes_from_type_node
-        # subscribe_alarms_and_conditions
-        # self._event_sub._create_eventfilter('System1NonExclusiveLevelAlarmType')
 
-        # 해당 항목이나 이건 실행시 오류가 남
-        # handle = self._event_sub.subscribe_events(evtypes=ua.ObjectIds.System1NonExclusiveLevelAlarmType)
         # print('check :: ', type(self._event_sub), handle)
         self._subs_event[node.nodeid] = handle
         print('MainWindow Event Subscribed !!')
+        # TODO 이벤트 refresh 테스트중, 삭제해야함
+        # eventArgs = self.client.get_node('i=3876').read_value()
+        # eventArgs[0].DataType = node.nodeid
+        # print('eventArgs2 : ', node.nodeid, eventArgs)
+        #
+        #
+        # self.client.get_node('i=2782').call_method('ConditionRefresh', eventArgs)
+        #
+        # print('check refresh')
         return handle
 
     def unsubscribe_events(self, node):
