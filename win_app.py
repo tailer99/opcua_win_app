@@ -9,14 +9,13 @@ from PyQt5.QtGui import QStandardItem, QIcon, QStandardItemModel
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5 import QtCore, QtGui, QtWidgets
-from asyncua import ua, common
+from asyncua import ua, common, client
 from asyncua.sync import Client, SyncNode
 
 from uawidgets import tree_widget, refs_widget, attrs_widget
 from uawidgets.utils import trycatchslot
 
 import pymysql
-import base64
 
 logger = None
 t_logger = None
@@ -27,7 +26,7 @@ c_logger = None  # only console
 
 gv_sys1_id = 0
 gv_user_id = 'EDGE'
-gv_db_conn_info = {}
+gv_db_conn_info = {'dbServer': 'DEV'}
 
 gv_ini_file_name = 'config.ini'
 
@@ -44,14 +43,15 @@ gv_static_log_file_name = 'static'
 gv_dynamic_log_file_name = 'dynamic'
 gv_event_log_file_name = 'event'
 gv_etc_log_file_name = 'etc'
+gv_event_subscription_id = 0
 
 
 class MysqlDBConn:
 
-    def __init__(self, dbServer):
+    def __init__(self, dbServer='DEV'):
 
         # TODO dev prod 인수 확인
-        self.read_config()
+        self.read_config(dbServer)
 
         hostIp = gv_db_conn_info['hostIp']
         port = int(gv_db_conn_info['port'])
@@ -62,19 +62,20 @@ class MysqlDBConn:
         self.conn = pymysql.connect(host=hostIp, port=port, user=userNm, password=passWd,
                                     db=dbName, charset='utf8mb4')
 
-    def read_config(self):
+    def read_config(self, dbServer):
         global gv_db_conn_info
 
         config_file = configparser.ConfigParser()
         if config_file.read(gv_ini_file_name, encoding='utf-8'):
 
             if config_file.has_section('DB'):
-                if config_file.has_section('DEV'):
-                    gv_db_conn_info['hostIp'] = config_file['DEV']['hostIp']
-                    gv_db_conn_info['port'] = config_file['DEV']['port']
-                    gv_db_conn_info['userNm'] = config_file['DEV']['userNm']
-                    gv_db_conn_info['passWd'] = config_file['DEV']['passWd']
-                    gv_db_conn_info['dbName'] = config_file['DEV']['dbName']
+                if config_file.has_section(dbServer):
+                    gv_db_conn_info['dbServer'] = dbServer
+                    gv_db_conn_info['hostIp'] = config_file[dbServer]['hostIp']
+                    gv_db_conn_info['port'] = config_file[dbServer]['port']
+                    gv_db_conn_info['userNm'] = config_file[dbServer]['userNm']
+                    gv_db_conn_info['passWd'] = config_file[dbServer]['passWd']
+                    gv_db_conn_info['dbName'] = config_file[dbServer]['dbName']
         else:
             print('ini file not found!!')
 
@@ -84,28 +85,31 @@ class MysqlDBConn:
 class DataChangeHandler(QObject):
     data_change_fired = pyqtSignal(object, str, str)
 
-    inserted_data = {}
-    cur_update_time = datetime.now()
-    last_update_time = datetime.now()
-
-    dynamic_inserted_data = {}
-    dynamic_cur_update_time = datetime.now()
-    dynamic_last_update_time = datetime.now()
-
     def __init__(self):
         super().__init__()
+
+        self.inserted_data = {}
+        self.cur_update_time = datetime.now()
+        self.last_update_time = datetime.now()
+
+        self.dynamic_inserted_data = {}
+        self.dynamic_cur_update_time = datetime.now()
+        self.dynamic_last_update_time = datetime.now()
 
         self.conn = None
         self.connect_db()
 
     def connect_db(self):
         try:
-            self.conn = MysqlDBConn('dev').conn
+            self.conn = MysqlDBConn(gv_db_conn_info['dbServer']).conn
+            s_logger.info('### DataChange connected to DB ###')
+
         except Exception as e:
-            logger.info('DataChangeHandler : DB Conn Error -- ' + str(e))
+            s_logger.error('DataChangeHandler : DB Conn Error -- ' + str(e))
+            sys.exit('finished due to DB Connection Error')
 
     def datachange_notification(self, node, val, data):
-        # print(' datachange_notification start ', node, val, data.monitored_item.Value.SourceTimestamp)
+        # print('datachange_notification start ', node, val, data.monitored_item.Value.SourceTimestamp)
 
         # DB 연결 여부 확인
         self.conn.ping(True)
@@ -116,111 +120,120 @@ class DataChangeHandler(QObject):
             data_ts = data.monitored_item.Value.ServerTimestamp.isoformat().strftime('%Y-%m-%d %H:%M:%S')
         else:
             data_ts = datetime.now().isoformat().strftime('%Y-%m-%d %H:%M:%S')
-        self.data_change_fired.emit(node, str(val), data_ts)
 
         if isinstance(val, ua.DynamicDataType):
             # print('waveform')
             # print(' Extension : ', val.MeasurementId, '  ', val.NumberOfSamples, val)
-
-            with self.conn.cursor() as curs:
-                try:
-
-                    # 로그에 10분간의 건수 작성
-                    self.dynamic_cur_update_time = datetime.now()
-                    # 10분에 1번 건수 쓰기
-                    # print(self.dynamic_cur_update_time - self.dynamic_last_update_time,
-                    #       timedelta(seconds=gv_dynamic_write_interval), val.MeasurementId)
-                    if self.dynamic_cur_update_time - self.dynamic_last_update_time >= \
-                            timedelta(seconds=gv_dynamic_write_interval):
-                        write_cnt = len(self.dynamic_inserted_data)
-
-                        msg = ' ### dynamic insert count ' + str(write_cnt)
-                        d_logger.info(msg)
-
-                        # Item List 초기화
-                        self.dynamic_inserted_data.clear()
-                        self.dynamic_last_update_time = self.dynamic_cur_update_time
-
-                    # 건별 데이터 입력
-                    crt_wk = int(datetime.now().strftime('%W'))
-
-                    measurement_id, point_id, company_id, measurement_name = \
-                        self.search_item_id(curs, gv_sys1_id, node)
-                    # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
-
-                    sql = "insert ignore into SDA_WAVEFORM(CRT_WK, SYS1_ID, POINT_ID, MEASUREMENT_ID, " \
-                          "UTC_TIME_STAMP, NO_OF_DATA, C_DATA, UNIT_NAME, SUB_UNIT_NAME, RPM," \
-                          "FMAX, FMAX_UNIT_NAME, SAMPLING_PERIOD, SAMPLING_PERIOD_UNIT_NAME, CREATE_DT) " \
-                          "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
-                    record = (crt_wk, gv_sys1_id, point_id, measurement_id,
-                              val.UTCTimestamp.strftime('%Y-%m-%d %H:%M:%S'), val.NumberOfSamples, str(val.Data),
-                              val.UnitName, val.SubunitName, int(val.RPM),
-                              val.Fmax, val.FmaxUnitName, round(val.SamplingPeriod, 18), val.SamplingPeriodUnitName)
-                    # print('input data :', record)
-
-                    curs.execute(sql, record)
-                    self.conn.commit()
-
-                    self.dynamic_inserted_data[str(node.nodeid)] = len(self.dynamic_inserted_data) + 1
-
-                    # TODO 화면 하단 log 에 출력하기
-                    # logger.info('dynamic insert ok', measurement_id, measurement_name)
-
-                    # 건별로 파일에 작성
-                    # print('dynamic insert ok', datetime.now(), measurement_id, measurement_name)
-                    msg = ' dynamic data insert : ' + str(measurement_id) + ' ' + measurement_name
-                    d_logger.info(msg)
-
-                except Exception as e:
-                    msg = ' dynamic data INSERT error occured ' + str(e)
-                    self.d_logger.info(msg)
+            self.insert_dynamic_data(node, val)
 
         else:
             # print('trend', node, data)
+            self.insert_static_data(node, val, data_ts)
 
-            with self.conn.cursor() as curs:
-                try:
-                    aggr_time_cd = '2M'
+        self.data_change_fired.emit(node, str(val), data_ts)
 
-                    self.cur_update_time = datetime.now()
-                    # 2분에 1번 쓰기
-                    # 입력시간 조건이 되었는지와 입력된 건인지 비교하여 데이터 INSERT 수행
-                    if self.cur_update_time - self.last_update_time >= timedelta(seconds=gv_write_interval):
-                        write_cnt = len(self.inserted_data)
+    # insert WAVEFORM table
+    def insert_dynamic_data(self, node, val):
 
-                        # print(datetime.now().strftime('%Y%m%d%H%M%S') + ' static insert count ' + str(write_cnt))
-                        msg = ' ### static insert count ' + str(write_cnt)
-                        s_logger.info(msg)
+        with self.conn.cursor() as curs:
+            try:
 
-                        # Item List 초기화
-                        self.inserted_data.clear()
-                        self.last_update_time = self.cur_update_time
+                # 로그에 10분간의 건수 작성
+                self.dynamic_cur_update_time = datetime.now()
+                # 10분에 1번 건수 쓰기
+                # print(self.dynamic_cur_update_time - self.dynamic_last_update_time,
+                #       timedelta(seconds=gv_dynamic_write_interval), val.MeasurementId)
+                if self.dynamic_cur_update_time - self.dynamic_last_update_time >= \
+                        timedelta(seconds=gv_dynamic_write_interval):
+                    write_cnt = len(self.dynamic_inserted_data)
 
-                    if str(node.nodeid) in self.inserted_data:
-                        pass
-                    else:
-                        measurement_id, point_id, company_id, measurement_name = \
-                            self.search_item_id(curs, gv_sys1_id, node)
-                        # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
-                        sql = "insert ignore into SDA_TREND(CRT_MONTH, SYS1_ID, POINT_ID, MEASUREMENT_ID, " \
-                              "AGGR_TIME_CD, SOURCE_DT, VAL, VAL_TYPE, CREATE_DT) " \
-                              "values (%s, %s, %s, %s, %s, %s, round(%s,3), %s, NOW())"
-                        record = (datetime.now().month, gv_sys1_id, point_id, measurement_id,
-                                  aggr_time_cd, data_ts, val, 2)
-                        curs.execute(sql, record)
-                        self.conn.commit()
+                    msg = ' ### dynamic insert count ' + str(write_cnt)
+                    d_logger.info(msg)
 
-                        self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
+                    # Item List 초기화
+                    self.dynamic_inserted_data.clear()
+                    self.dynamic_last_update_time = self.dynamic_cur_update_time
 
-                        # TODO 화면 하단 log 에 출력하기
-                        # logger.info('static insert ok : ' + str(measurement_id) + measurement_name)
+                # 건별 데이터 입력
+                crt_wk = int(datetime.now().strftime('%W'))
 
-                        # print(datetime.now().strftime('%Y%m%d%H%M%S'), '  static insert ok',
-                        #       measurement_id, measurement_name, val)
+                measurement_id, point_id, company_id, measurement_name = \
+                    self.search_item_id(curs, gv_sys1_id, node)
+                # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
 
-                except Exception as e:
-                    msg = ' static data INSERT error occured ' + str(e)
+                sql = "insert ignore into SDA_WAVEFORM(CRT_WK, SYS1_ID, POINT_ID, MEASUREMENT_ID, " \
+                      "UTC_TIME_STAMP, NO_OF_DATA, C_DATA, UNIT_NAME, SUB_UNIT_NAME, RPM," \
+                      "FMAX, FMAX_UNIT_NAME, SAMPLING_PERIOD, SAMPLING_PERIOD_UNIT_NAME, CREATE_DT) " \
+                      "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                record = (crt_wk, gv_sys1_id, point_id, measurement_id,
+                          val.UTCTimestamp.strftime('%Y-%m-%d %H:%M:%S'), val.NumberOfSamples, str(val.Data),
+                          val.UnitName, val.SubunitName, int(val.RPM),
+                          val.Fmax, val.FmaxUnitName, round(val.SamplingPeriod, 18), val.SamplingPeriodUnitName)
+                # print('input data :', record)
+
+                curs.execute(sql, record)
+                self.conn.commit()
+
+                self.dynamic_inserted_data[str(node.nodeid)] = len(self.dynamic_inserted_data) + 1
+
+                # TODO 화면 하단 log 에 출력하기
+                # logger.info('dynamic insert ok', measurement_id, measurement_name)
+
+                # 건별로 파일에 작성
+                # print('dynamic insert ok', datetime.now(), measurement_id, measurement_name)
+                msg = ' dynamic data insert : ' + str(measurement_id) + ' ' + measurement_name
+                d_logger.info(msg)
+
+            except Exception as e:
+                msg = ' dynamic data INSERT error occured ' + str(e)
+                d_logger.info(msg)
+
+    # insert TREND table
+    def insert_static_data(self, node, val, data_ts):
+
+        with self.conn.cursor() as curs:
+            try:
+                aggr_time_cd = '2M'
+
+                self.cur_update_time = datetime.now()
+                # 2분에 1번 쓰기
+                # 입력시간 조건이 되었는지와 입력된 건인지 비교하여 데이터 INSERT 수행
+                if self.cur_update_time - self.last_update_time >= timedelta(seconds=gv_write_interval):
+                    write_cnt = len(self.inserted_data)
+
+                    # print(datetime.now().strftime('%Y%m%d%H%M%S') + ' static insert count ' + str(write_cnt))
+                    msg = ' ### static insert count ' + str(write_cnt)
                     s_logger.info(msg)
+
+                    # Item List 초기화
+                    self.inserted_data.clear()
+                    self.last_update_time = self.cur_update_time
+
+                if str(node.nodeid) in self.inserted_data:
+                    pass
+                else:
+                    measurement_id, point_id, company_id, measurement_name = \
+                        self.search_item_id(curs, gv_sys1_id, node)
+                    # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
+                    sql = "insert ignore into SDA_TREND(CRT_MONTH, SYS1_ID, POINT_ID, MEASUREMENT_ID, " \
+                          "AGGR_TIME_CD, SOURCE_DT, VAL, VAL_TYPE, CREATE_DT) " \
+                          "values (%s, %s, %s, %s, %s, %s, round(%s,3), %s, NOW())"
+                    record = (datetime.now().month, gv_sys1_id, point_id, measurement_id,
+                              aggr_time_cd, data_ts, val, 2)
+                    curs.execute(sql, record)
+                    self.conn.commit()
+
+                    self.inserted_data[str(node.nodeid)] = len(self.inserted_data) + 1
+
+                    # TODO 화면 하단 log 에 출력하기
+                    # logger.info('static insert ok : ' + str(measurement_id) + measurement_name)
+
+                    # print(datetime.now().strftime('%Y%m%d%H%M%S'), '  static insert ok',
+                    #       measurement_id, measurement_name, val)
+
+            except Exception as e:
+                msg = ' static data INSERT error occured ' + str(e)
+                s_logger.info(msg)
 
     # using NodeID find ITEM_ID
     def search_item_id(self, curs, sys1_id, node_id):
@@ -338,174 +351,238 @@ class DataChangeUI(object):
 class EventHandler(QObject):
     event_fired = pyqtSignal(object)
 
-    try:
-        conn = MysqlDBConn('dev').conn
-    except Exception as e:
-        print('EventHandler : DB Conn Error -- ', e)
+    def __init__(self, window):
+        super().__init__()
+
+        self.conn = None
+        self.connect_db()
+
+        # event call 을 위해서 window 객체 가져옴
+        self.window = window
+
+    def connect_db(self):
+        try:
+            self.conn = MysqlDBConn(gv_db_conn_info['dbServer']).conn
+            e_logger.info('### Event connected to DB ###')
+
+        except Exception as e:
+            e_logger.error('EventHandler : DB Conn Error -- ' + str(e))
+            sys.exit('finished due to DB Connection Error')
+
 
     def status_change_notification(self, status):
         print(' status_change_notification start ', type(status), status)
 
     def event_notification(self, event):
-        print(' event_notification start ', event)
-        # print(' event info : ', event.HighHighLimit, ' Node : ', event.SourceNode, ' ', event.SourceName,
-        #       ' ConditionName : ', event.ConditionName, ' , Message : ', event.Message.Text,
-        #       event.ActiveState.Text,
-        #       ' AckedState : ', event.AckedState.Text)
+        e_logger.info(' event_notification start ' + str(event))
+        # print(' event info :  EventType - ', event.EventType, type(event.EventType),
+        #       ' , Severity - ', event.Severity, type(event.Severity),
+        #       ' , Message - ', event.Message.Text, type(event.Message.Text))
 
         if str(event.EventType) == "i=2789":
             e_logger.info(' refresh Required : ' + event.Message.Text)  # Address space and nodes updated.
-            # TODO RefreshStartEvent 실행
-            # TODO 이벤트가 두번 오는 거 확인, machine 만 subscribe 하는 걸로 체크
+
+            # call Condition Refresh function
+            self.window.subscribe_events_again()
 
         elif str(event.EventType) == "i=2787":
             e_logger.info(' refresh started : ' + event.Message.Text)
-            # TODO Refresh 될 때 기존 event 중 active 인거 모두 inactive 로 바꾸고 새로 받은 데이터만 active 로 처리해야 함
+
+            # Refresh 될 때 기존 event 중 active 인거 모두 inactive 로 바꿔준다
+            self.clean_events()
 
         elif str(event.EventType) == "i=2788":
             e_logger.info(' refresh complete : ' + event.Message.Text)
 
-        # TODO ack 는 나중에 로직 삭제하고 통과시켜야 함
-        elif event.AckedState.Text == 'Acknowledged':
-            # pass
+        elif event.Severity == 100:
+            e_logger.info(' server event occurred : ' + event.Message.Text)
 
-            print('acked')
-            # DB 연결 여부 확인
-            self.conn.ping(True)
+        # 알람 등록 처리
+        elif event.ActiveState.Text == 'Active':
 
-            with self.conn.cursor() as curs:
-                try:
-                    # event id 는 계속 새로 나와서 source node 로 바꿈, table 컬럼명도 바꿔야 함
-                    event_id = event.SourceNode
+            # 'HighHighLimit:0.0', 'HighLimit:None', 'LowLimit:None', 'LowLowLimit:None',
+            # 'BaseHighHighLimit:53.0', 'BaseHighLimit:None', 'BaseLowLimit:None', 'BaseLowLowLimit:None',
 
-                    measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
-                    # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
+            search_state = self.search_event_node_id(event)[0]
+            # e_logger.info('check search_state : ' + str(search_state))
 
-                    alarm_level = event.ConditionName[-1]
+            # if not found
+            if search_state == 0:
+                # e_logger.info(' not found ')
+                self.insert_event_data(event)
 
-                    if event.ActiveState.Text == 'Active':
-                        entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                        left_dt = ''
-                        is_active = 1
-                    elif event.ActiveState.Text == 'Inactive':
-                        entered_dt = ''
-                        left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                        is_active = 0
-                    else:
-                        entered_dt = ''
-                        left_dt = ''
-                        is_active = 2
+            # active state found
+            elif search_state == 1:
+                e_logger.info('=== already active alarm exists, skip event : ' + str(event))
 
-                    measurement = event.SourceName[event.SourceName.rfind('>') + 1:]
-                    machine_temp = event.SourceName[:event.SourceName.rfind('>')]
-                    point = machine_temp[machine_temp.rfind('>') + 1:]
-                    machine = machine_temp[:machine_temp.rfind('>')]
+            # inactive state found
+            elif search_state == -1:
+                # e_logger.info(' exists, but inactive ')
+                self.update_event_data(event)
 
-                    trigger_value = event.TriggerValue
+            else:
+                e_logger.info('=== active other case occurred : ' + str(event))
 
-                    server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
+        # 알람 해지 처리
+        elif event.ActiveState.Text == 'Inactive':
 
-                    # 알람이 발생했을 때는 INSERT
-                    if is_active == 1:
-                        sql = "insert into SDA_EVENT(SYS1_ID, EVENT_ID, POINT_ID, MEASUREMENT_ID, " \
-                              "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
-                              "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
-                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, %s, %s, NOW())"
-                        record = (
-                            gv_sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
-                            machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
-                    # 알람이 종료되었을 때는 UPDATE
-                    else:
-                        sql = "update SDA_EVENT " \
-                              "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
-                              "       UPDATE_ID = %s, UPDATE_DT = NOW() " \
-                              "where  SYS1_ID = %s " \
-                              "and    EVENT_ID = %s "
-                        record = (left_dt, is_active, gv_user_id, gv_sys1_id, event_id)
+            search_state = self.search_event_node_id(event)[0]
+            # e_logger.info('check search_state : ' + str(search_state))
 
-                    print(sql, '    ', record)
-                    curs.execute(sql, record)
-                    self.conn.commit()
+            # if not found
+            if search_state == 0:
+                e_logger.info(' inactive, but not found ')
+                self.insert_event_data(event)
 
-                except Exception as e:
-                    print('EVENT DATA INSERT error occurred : ', e)
+            # active state found
+            elif search_state == 1:
+                # e_logger.info(' exists, active ')
+                self.update_event_data(event)
 
-        elif event.AckedState.Text == 'Unacknowledged':
-            print('un acked')
+            # inactive state found
+            elif search_state == -1:
+                e_logger.info('=== already inactive alarm exists, skip event : ' + str(event))
 
-            # TODO 아래 부분은 함수로 변경하여 refresh 일때도 호출 할 수 있도록 함
-
-            # DB 연결 여부 확인
-            self.conn.ping(True)
-
-            with self.conn.cursor() as curs:
-                try:
-                    # event id 는 계속 새로 나와서 source node 로 바꿈, table 컬럼명도 바꿔야 함
-                    event_id = event.SourceNode
-
-                    measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
-                    # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
-
-                    alarm_level = event.ConditionName[-1]
-
-                    if event.ActiveState.Text == 'Active':
-                        entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                        left_dt = ''
-                        is_active = 1
-                    elif event.ActiveState.Text == 'Inactive':
-                        entered_dt = ''
-                        left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                        is_active = 0
-                    else:
-                        entered_dt = ''
-                        left_dt = ''
-                        is_active = 2
-
-                    measurement = event.SourceName[event.SourceName.rfind('>') + 1:]
-                    machine_temp = event.SourceName[:event.SourceName.rfind('>')]
-                    point = machine_temp[machine_temp.rfind('>') + 1:]
-                    machine = machine_temp[:machine_temp.rfind('>')]
-
-                    trigger_value = event.TriggerValue
-
-                    server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
-
-                    # 알람이 발생했을 때는 INSERT
-                    if is_active == 1:
-                        sql = "insert into SDA_EVENT(SYS1_ID, EVENT_ID, POINT_ID, MEASUREMENT_ID, " \
-                              "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
-                              "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
-                              "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, %s, %s, NOW())"
-                        record = (
-                            gv_sys1_id, event_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
-                            machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
-                    # 알람이 종료되었을 때는 UPDATE
-                    else:
-                        sql = "update SDA_EVENT " \
-                              "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
-                              "       UPDATE_ID = %s, UPDATE_DT = NOW() " \
-                              "where  SYS1_ID = %s " \
-                              "and    EVENT_ID = %s "
-                        record = (left_dt, is_active, gv_user_id, gv_sys1_id, event_id)
-
-                    print(sql, '    ', record)
-                    curs.execute(sql, record)
-
-                    self.conn.commit()
-
-                except Exception as e:
-                    print('EVENT DATA INSERT error occurred : ', e)
-            self.event_fired.emit(event)
+            else:
+                e_logger.info('=== inactive other case occurred : ' + str(event))
 
         else:
-            print('other case : ', event)
+            e_logger.info('other case : ' + str(event))
 
+    # 모든 알람을 inactive 처리하고 새로 받은 알람들만 active 로 등록
+    def clean_events(self):
+
+        # DB 연결 여부 확인
+        self.conn.ping(True)
+
+        with self.conn.cursor() as curs:
+            try:
+                left_dt = ''
+                is_active = 0
+
+                sql = "update SDA_EVENT " \
+                      "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
+                      "       UPDATE_ID = 'CLEAR', UPDATE_DT = NOW() " \
+                      "where  SYS1_ID = %s " \
+                      "and    IS_ACTIVE = 1 "
+
+                record = (left_dt, is_active, int(gv_sys1_id))
+
+                # print(sql, '    ', record)
+                treat_cnt = curs.execute(sql, record)
+
+                e_logger.info('기존 알람 inactive 건수 : ' + str(treat_cnt))
+
+                self.conn.commit()
+
+            except Exception as e:
+                e_logger.error('EVENT DATA CLEAR error occurred : ' + str(e))
+
+    def insert_event_data(self, event):
+
+        # DB 연결 여부 확인
+        self.conn.ping(True)
+
+        with self.conn.cursor() as curs:
+            try:
+                # event id 는 계속 새로 나와서 source node 로 바꿈
+                node_id = str(event.SourceNode)
+
+                measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
+                # print('measurement_id, point_id, company_id : ', measurement_id, point_id, company_id)
+
+                alarm_level = event.ConditionName[-1]
+
+                if event.ActiveState.Text == 'Active':
+                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    left_dt = ''
+                    is_active = 1
+                elif event.ActiveState.Text == 'Inactive':
+                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    is_active = 0
+                else:
+                    entered_dt = ''
+                    left_dt = ''
+                    is_active = 2
+
+                measurement = event.SourceName[event.SourceName.rfind('>') + 1:]
+                machine_temp = event.SourceName[:event.SourceName.rfind('>')]
+                point = machine_temp[machine_temp.rfind('>') + 1:]
+                machine = machine_temp[:machine_temp.rfind('>')]
+
+                trigger_value = event.TriggerValue
+
+                server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
+
+                sql = "insert into SDA_EVENT(SYS1_ID, NODE_ID, POINT_ID, MEASUREMENT_ID, " \
+                      "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
+                      "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
+                      "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, %s, %s, NOW())"
+                record = (
+                    gv_sys1_id, node_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
+                    machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
+
+                # e_logger.error(sql + '    ' + str(record))
+                curs.execute(sql, record)
+
+                self.conn.commit()
+
+                self.event_fired.emit(event)
+
+            except Exception as e:
+                e_logger.error('EVENT DATA INSERT error occurred : ' + str(e))
+
+    def update_event_data(self, event):
+
+        # DB 연결 여부 확인
+        self.conn.ping(True)
+
+        with self.conn.cursor() as curs:
+            try:
+                # event id 는 계속 새로 나와서 source node 로 바꿈
+                node_id = str(event.SourceNode)
+
+                alarm_level = event.ConditionName[-1]
+
+                if event.ActiveState.Text == 'Active':
+                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    left_dt = ''
+                    is_active = 1
+                elif event.ActiveState.Text == 'Inactive':
+                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    is_active = 0
+                else:
+                    entered_dt = ''
+                    left_dt = ''
+                    is_active = 2
+
+                sql = "update SDA_EVENT " \
+                      "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
+                      "       UPDATE_ID = %s, UPDATE_DT = NOW() " \
+                      "where  SYS1_ID = %s " \
+                      "and    NODE_ID = %s " \
+                      "and    ALARM_LEVEL = %s " \
+                      "and    ENTERED_DT = %s "
+                record = (left_dt, is_active, gv_user_id, gv_sys1_id, node_id, alarm_level, entered_dt)
+
+                # e_logger.error(sql + '    ' + str(record))
+                curs.execute(sql, record)
+
+                self.conn.commit()
+
+                self.event_fired.emit(event)
+
+            except Exception as e:
+                e_logger.error('EVENT DATA UPDAT error occurred : ' + str(e))
 
     # using NodeID find ITEM_ID
     def search_item_id(self, curs, sys1_id, node_id):
 
         # search ITEM ID
-        sql = "select ITEM_ID, P_ITEM_ID, L1_ITEM_ID from SDA_TREE where SYS1_ID = %s and NODE_ID = %s and GUBUN = 'S'"
+        sql = "select ITEM_ID, P_ITEM_ID, L1_ITEM_ID from SDA_TREE " \
+              "where SYS1_ID = %s and NODE_ID = %s and GUBUN = 'S'"
         record = (sys1_id, node_id)
         curs.execute(sql, record)
         item_id, p_item_id, l1_item_id = curs.fetchone()
@@ -513,13 +590,35 @@ class EventHandler(QObject):
 
         return item_id, p_item_id, l1_item_id
 
+    # using endpoint_url find SYS1_ID
+    def search_event_node_id(self, event):
+
+        with self.conn.cursor() as curs:
+            try:
+                sql = "select ifnull(max(case when IS_ACTIVE = 1 then 1 else -1 end),0) " \
+                      "from SDA_EVENT " \
+                      "where SYS1_ID = %s and NODE_ID = %s " \
+                      "and   ENTERED_DT = %s " \
+                      "and   ALARM_LEVEL = %s "
+                record = (int(gv_sys1_id), str(event.SourceNode), event.Time.strftime('%Y-%m-%d %H:%M:%S'),
+                          event.ConditionName[-1])
+
+                # print(sql, '    ', record)
+                curs.execute(sql, record)
+                active_state = curs.fetchone()
+
+                return active_state
+
+            except Exception as e:
+                e_logger.error('EVENT DATA FIND error occurred : ' + str(e))
+
 
 class EventUI(object):
 
     def __init__(self, window, uaclient):
         self.window = window
         self.uaclient = uaclient
-        self._handler = EventHandler()
+        self._handler = EventHandler(window)
         self._subscribed_nodes = []  # FIXME: not really needed
         self.model = QStandardItemModel()
         self.window.eventView.setModel(self.model)
@@ -552,16 +651,11 @@ class EventUI(object):
 
     @trycatchslot
     def _subscribe(self, node=None):
-        print('EventUI', '_subscribe', __class__, __name__)
         if not node:
             node = self.window.get_current_node()
             if node is None:
                 return
-        # if node in self._subscribed_nodes:
-        #     logger.info("already subscribed to event for node: %s", node)
-        #     return
-        # node 별이 아니라 서버별 event 가 subscribe 되서 개수로만 체크함
-        if len(self._subscribed_nodes) > 0:
+        if node in self._subscribed_nodes:
             logger.info("already subscribed to event for node: %s", node)
             return
         self.window.eventDockWidget.raise_()
@@ -1063,7 +1157,7 @@ class MainWindow(QMainWindow):
 
         # check EDGE DB connection
         try:
-            self.conn = MysqlDBConn('dev').conn
+            self.conn = MysqlDBConn(gv_db_conn_info['dbServer']).conn
             logger.info('### connected to DB ###')
 
         except Exception as e:
@@ -1099,6 +1193,7 @@ class MainWindow(QMainWindow):
         # connect System1 Server
         endpoint_url = self.addrComboBox.currentText()
         endpoint_url = endpoint_url.strip()
+        logger.info('### connecting to System1 ( ' + endpoint_url + ' )')
 
         try:
             global gv_sys1_id
@@ -1362,6 +1457,23 @@ class MainWindow(QMainWindow):
         node = self.client.get_node(self.treeList[1][1])
         self.event_ui._subscribe(node)
 
+    # Event subscribe
+    def subscribe_events_again(self):
+
+        msg = '================== subscribe all items again ====='
+        logger.info(msg)
+
+        # TODO 어떻게 다시 조회하나.. 여러가지 방법들이 다 안됨
+
+        # 기존 알람들 조회
+        # inputArgs = ua.Variant(gv_event_subscription_id, ua.VariantType.UInt32)
+        # print('before sub event : gv_event_subscription_id = ', gv_event_subscription_id)
+        # self.client.get_node('i=2782').call_method('ConditionRefresh', inputArgs)
+
+        # condition refresh 호출이 한번밖에 안되서 연결을 끊었다가 다시 연결함
+        # self.disconnect()
+        # self.connect()
+
     def get_child_node2(self, nodeList, gubun, level, disp_ord, p_node):
         # print('nodeList : ', nodeList)
 
@@ -1505,7 +1617,7 @@ class MainWindow(QMainWindow):
 
     def disconnect(self):
         try:
-
+            logger.info(' disconnecting.. from System1 ')
             self.client.disconnect()
             logger.info(' disconnected from System1 ')
         finally:
@@ -1678,7 +1790,7 @@ class MainWindow(QMainWindow):
             curs.execute(sql, record)
             sys1_id = curs.fetchone()
 
-        # print('sys1_id : ', type(sys1_id), sys1_id, sys1_id[0])
+        # print('sys1_id : ', type(sys1_id), sys1_id, type(sys1_id[0]), sys1_id[0])
 
         return str(sys1_id[0]).zfill(2)
 
@@ -1794,39 +1906,40 @@ class MainWindow(QMainWindow):
         if not self._event_sub:
             self._event_sub = self.client.create_subscription(500, handler)
 
-        # TODO event refresh, system event 받아오기
+            # subscription 생성후 id 를 저장해 놓음
+            global gv_event_subscription_id
+            gv_event_subscription_id = self._event_sub.aio_obj.subscription_id
+
         evtypes = [ua.ObjectIds.RefreshRequiredEventType,
                    ua.ObjectIds.RefreshStartEventType, ua.ObjectIds.RefreshEndEventType,
                    ua.ObjectIds.SystemEventType,
+                   ua.ObjectIds.DeviceFailureEventType,
+                   ua.ObjectIds.SystemStatusChangeEventType,
+                   ua.ObjectIds.ConditionType,
                    ua.ObjectIds.NonExclusiveLevelAlarmType]
-        print('evtypes : ', evtypes)
-        handle = self._event_sub.subscribe_events(evtypes=evtypes)
+        # print('evtypes : ', evtypes)
+
+        handle = self._event_sub.subscribe_events(evtypes=evtypes, sourcenode=node)
 
         # print('check :: ', type(self._event_sub), handle)
         self._subs_event[node.nodeid] = handle
-        print('MainWindow Event Subscribed !!')
-        # TODO 이벤트 refresh 테스트중, 삭제해야함
-        # eventArgs = self.client.get_node('i=3876').read_value()
-        # eventArgs[0].DataType = node.nodeid
-        # print('eventArgs2 : ', node.nodeid, eventArgs)
-        #
-        #
-        # self.client.get_node('i=2782').call_method('ConditionRefresh', eventArgs)
-        #
-        # print('check refresh')
+        e_logger.info('MainWindow Event Subscribed !!')
+
+        # call method condition refresh
+        # 기존 알람들 조회
+        inputArgs = ua.Variant(gv_event_subscription_id, ua.VariantType.UInt32)
+        # print('before sub event : gv_event_subscription_id = ', gv_event_subscription_id)
+        self.client.get_node('i=2782').call_method('ConditionRefresh', inputArgs)
+
         return handle
 
     def unsubscribe_events(self, node):
 
-        # node 별로 event subscribe 를 하는게 아니라서 대표로 하나만 처리함
-        # self._event_sub.unsubscribe(self._subs_event[node.nodeid])
-        # if node.nodeid in self._subs_event:
-        #     del self._subs_event[node.nodeid]
+        self._event_sub.unsubscribe(self._subs_event[node.nodeid])
+        if node.nodeid in self._subs_event:
+            del self._subs_event[node.nodeid]
 
-        # 처음 한번만 입력하고 종료시 삭제함
-        self._event_sub.unsubscribe(list(self._subs_event.values())[0])
-        self._subs_event.clear()
-        print('Event UnSubscribed !!')
+        e_logger.info('Event UnSubscribed !!')
 
     def show_error(self, msg):
         logger.error("showing error: %s", msg)
