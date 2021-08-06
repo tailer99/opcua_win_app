@@ -350,15 +350,13 @@ class DataChangeUI(object):
 
 class EventHandler(QObject):
     event_fired = pyqtSignal(object)
+    config_change_event_fired = pyqtSignal(object)
 
-    def __init__(self, window):
+    def __init__(self):
         super().__init__()
 
         self.conn = None
         self.connect_db()
-
-        # event call 을 위해서 window 객체 가져옴
-        self.window = window
 
     def connect_db(self):
         try:
@@ -368,7 +366,6 @@ class EventHandler(QObject):
         except Exception as e:
             e_logger.error('EventHandler : DB Conn Error -- ' + str(e))
             sys.exit('finished due to DB Connection Error')
-
 
     def status_change_notification(self, status):
         print(' status_change_notification start ', type(status), status)
@@ -383,11 +380,10 @@ class EventHandler(QObject):
             e_logger.info(' refresh Required : ' + event.Message.Text)  # Address space and nodes updated.
 
             # call Condition Refresh function
-            self.window.subscribe_events_again()
+            self.config_change_event_fired.emit(event)
 
         elif str(event.EventType) == "i=2787":
             e_logger.info(' refresh started : ' + event.Message.Text)
-
             # Refresh 될 때 기존 event 중 active 인거 모두 inactive 로 바꿔준다
             self.clean_events()
 
@@ -399,9 +395,6 @@ class EventHandler(QObject):
 
         # 알람 등록 처리
         elif event.ActiveState.Text == 'Active':
-
-            # 'HighHighLimit:0.0', 'HighLimit:None', 'LowLimit:None', 'LowLowLimit:None',
-            # 'BaseHighHighLimit:53.0', 'BaseHighLimit:None', 'BaseLowLimit:None', 'BaseLowLowLimit:None',
 
             search_state = self.search_event_node_id(event)[0]
             # e_logger.info('check search_state : ' + str(search_state))
@@ -461,7 +454,7 @@ class EventHandler(QObject):
                 is_active = 0
 
                 sql = "update SDA_EVENT " \
-                      "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
+                      "set    UTC_LEFT_DT = %s, IS_ACTIVE = %s, " \
                       "       UPDATE_ID = 'CLEAR', UPDATE_DT = NOW() " \
                       "where  SYS1_ID = %s " \
                       "and    IS_ACTIVE = 1 "
@@ -494,16 +487,16 @@ class EventHandler(QObject):
                 alarm_level = event.ConditionName[-1]
 
                 if event.ActiveState.Text == 'Active':
-                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                    left_dt = ''
+                    utc_entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    utc_left_dt = ''
                     is_active = 1
                 elif event.ActiveState.Text == 'Inactive':
-                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                    left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    utc_entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    utc_left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
                     is_active = 0
                 else:
-                    entered_dt = ''
-                    left_dt = ''
+                    utc_entered_dt = ''
+                    utc_left_dt = ''
                     is_active = 2
 
                 measurement = event.SourceName[event.SourceName.rfind('>') + 1:]
@@ -513,17 +506,64 @@ class EventHandler(QObject):
 
                 trigger_value = event.TriggerValue
 
-                server_time_stamp = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
+                utc_receive_dt = event.ReceiveTime.strftime('%Y-%m-%d %H:%M:%S')
+
+                if not isinstance(event.HighHighLimit, float):
+                    over_highhigh_value = 0
+                else:
+                    over_highhigh_value = round(event.HighHighLimit, 3)
+
+                if not isinstance(event.BaseHighHighLimit, float):
+                    under_highhigh_value = 0
+                else:
+                    under_highhigh_value = round(event.BaseHighHighLimit, 3)
+
+                if not isinstance(event.HighLimit, float):
+                    over_high_value = 0
+                else:
+                    over_high_value = round(event.HighLimit, 3)
+
+                if not isinstance(event.BaseHighLimit, float):
+                    under_high_value = 0
+                else:
+                    under_high_value = round(event.BaseHighLimit, 3)
+
+                if not isinstance(event.LowLimit, float):
+                    over_low_value = 0
+                else:
+                    over_low_value = round(event.LowLimit, 3)
+
+                if not isinstance(event.BaseLowLimit, float):
+                    under_low_value = 0
+                else:
+                    under_low_value = round(event.BaseLowLimit, 3)
+
+                if not isinstance(event.LowLowLimit, float):
+                    over_lowlow_value = 0
+                else:
+                    over_lowlow_value = round(event.LowLowLimit, 3)
+
+                if not isinstance(event.BaseLowLowLimit, float):
+                    under_lowlow_value = 0
+                else:
+                    under_lowlow_value = round(event.BaseLowLowLimit, 3)
 
                 sql = "insert into SDA_EVENT(SYS1_ID, NODE_ID, POINT_ID, MEASUREMENT_ID, " \
-                      "ALARM_LEVEL, ENTERED_DT, LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
-                      "TRIGGER_VALUE, SERVER_TIME_STAMP, SMS_SEND_YN, CREATE_ID, CREATE_DT) " \
-                      "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, round(%s,3), %s, %s, %s, NOW())"
+                      "ALARM_LEVEL, UTC_ENTERED_DT, UTC_LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
+                      "TRIGGER_VALUE, UTC_RECEIVE_DT, SMS_SEND_YN, " \
+                      "OVER_HIGHHIGH_VALUE, UNDER_HIGHHIGH_VALUE, OVER_HIGH_VALUE, UNDER_HIGH_VALUE, " \
+                      "OVER_LOW_VALUE, UNDER_LOW_VALUE, OVER_LOWLOW_VALUE, UNDER_LOWLOW_VALUE, " \
+                      "CREATE_ID, CREATE_DT) " \
+                      "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, " \
+                      " round(%s,3), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
                 record = (
-                    gv_sys1_id, node_id, point_id, measurement_id, alarm_level, entered_dt, left_dt, is_active,
-                    machine, point, measurement, trigger_value, server_time_stamp, 'N', gv_user_id)
+                    gv_sys1_id, node_id, point_id, measurement_id, alarm_level, utc_entered_dt, utc_left_dt, is_active,
+                    machine, point, measurement, trigger_value, utc_receive_dt, 'N',
+                    over_highhigh_value, under_highhigh_value, over_high_value, under_high_value,
+                    over_low_value, under_low_value, over_lowlow_value, under_lowlow_value,
+                    gv_user_id)
 
-                # e_logger.error(sql + '    ' + str(record))
+                print(sql, '    ', record)
                 curs.execute(sql, record)
 
                 self.conn.commit()
@@ -546,26 +586,26 @@ class EventHandler(QObject):
                 alarm_level = event.ConditionName[-1]
 
                 if event.ActiveState.Text == 'Active':
-                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                    left_dt = ''
+                    utc_entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    utc_left_dt = ''
                     is_active = 1
                 elif event.ActiveState.Text == 'Inactive':
-                    entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
-                    left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    utc_entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
+                    utc_left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
                     is_active = 0
                 else:
-                    entered_dt = ''
-                    left_dt = ''
+                    utc_entered_dt = ''
+                    utc_left_dt = ''
                     is_active = 2
 
                 sql = "update SDA_EVENT " \
-                      "set    LEFT_DT = %s, IS_ACTIVE = %s, " \
+                      "set    UTC_LEFT_DT = %s, IS_ACTIVE = %s, " \
                       "       UPDATE_ID = %s, UPDATE_DT = NOW() " \
                       "where  SYS1_ID = %s " \
                       "and    NODE_ID = %s " \
                       "and    ALARM_LEVEL = %s " \
-                      "and    ENTERED_DT = %s "
-                record = (left_dt, is_active, gv_user_id, gv_sys1_id, node_id, alarm_level, entered_dt)
+                      "and    UTC_ENTERED_DT = %s "
+                record = (utc_left_dt, is_active, gv_user_id, gv_sys1_id, node_id, alarm_level, utc_entered_dt)
 
                 # e_logger.error(sql + '    ' + str(record))
                 curs.execute(sql, record)
@@ -575,7 +615,7 @@ class EventHandler(QObject):
                 self.event_fired.emit(event)
 
             except Exception as e:
-                e_logger.error('EVENT DATA UPDAT error occurred : ' + str(e))
+                e_logger.error('EVENT DATA UPDATE error occurred : ' + str(e))
 
     # using NodeID find ITEM_ID
     def search_item_id(self, curs, sys1_id, node_id):
@@ -598,7 +638,7 @@ class EventHandler(QObject):
                 sql = "select ifnull(max(case when IS_ACTIVE = 1 then 1 else -1 end),0) " \
                       "from SDA_EVENT " \
                       "where SYS1_ID = %s and NODE_ID = %s " \
-                      "and   ENTERED_DT = %s " \
+                      "and   UTC_ENTERED_DT = %s " \
                       "and   ALARM_LEVEL = %s "
                 record = (int(gv_sys1_id), str(event.SourceNode), event.Time.strftime('%Y-%m-%d %H:%M:%S'),
                           event.ConditionName[-1])
@@ -618,7 +658,7 @@ class EventUI(object):
     def __init__(self, window, uaclient):
         self.window = window
         self.uaclient = uaclient
-        self._handler = EventHandler(window)
+        self._handler = EventHandler()
         self._subscribed_nodes = []  # FIXME: not really needed
         self.model = QStandardItemModel()
         self.window.eventView.setModel(self.model)
@@ -629,6 +669,7 @@ class EventUI(object):
         self.window.addAction(self.window.actionUnsubscribeEvents)
         self.window.addAction(self.window.actionAddToGraph)
         self._handler.event_fired.connect(self._update_event_model, type=Qt.QueuedConnection)
+        self._handler.config_change_event_fired.connect(self._reconnect_server, type=Qt.QueuedConnection)
 
         # accept drops
         self.model.canDropMimeData = self.canDropMimeData
@@ -678,7 +719,12 @@ class EventUI(object):
 
     @trycatchslot
     def _update_event_model(self, event):
+        # TODO event 정보를 나눠서 입력해야 함
         self.model.appendRow([QStandardItem(str(event))])
+
+    @trycatchslot
+    def _reconnect_server(self, event):
+        self.window.reconnect()
 
 
 class MainWindow(QMainWindow):
@@ -1457,22 +1503,15 @@ class MainWindow(QMainWindow):
         node = self.client.get_node(self.treeList[1][1])
         self.event_ui._subscribe(node)
 
-    # Event subscribe
-    def subscribe_events_again(self):
+    # subscribe all again
+    def reconnect(self):
 
         msg = '================== subscribe all items again ====='
         logger.info(msg)
 
-        # TODO 어떻게 다시 조회하나.. 여러가지 방법들이 다 안됨
-
-        # 기존 알람들 조회
-        # inputArgs = ua.Variant(gv_event_subscription_id, ua.VariantType.UInt32)
-        # print('before sub event : gv_event_subscription_id = ', gv_event_subscription_id)
-        # self.client.get_node('i=2782').call_method('ConditionRefresh', inputArgs)
-
-        # condition refresh 호출이 한번밖에 안되서 연결을 끊었다가 다시 연결함
-        # self.disconnect()
-        # self.connect()
+        # system1 configure 정보가 바뀌어서 다시 접속해서 정보를 받아옴
+        self.disconnect()
+        self.connect()
 
     def get_child_node2(self, nodeList, gubun, level, disp_ord, p_node):
         # print('nodeList : ', nodeList)
