@@ -793,6 +793,7 @@ class EventHandler(QObject):
                                       subject, (gv_email_userid, gv_email_passwd))
         gmail_sender.emit(msg)
 
+
 class EventUI(object):
 
     def __init__(self, window, uaclient):
@@ -2220,3 +2221,15 @@ if __name__ == '__main__':
     # window.showFullScreen()
 
     sys.exit(app.exec_())
+
+
+# # daniel edited : add to child object
+# # asyncua>common>events>select_clauses_from_evtype : line 170
+# for subobject in await evtype.get_children():
+#     subobjName = await subobject.read_display_name()
+#     # print('subobject : ', subobject, subobjName.Text, type(subobject))
+#     if subobjName.Text == "System1NonExclusiveLevelAlarmType":
+#         for variable in await subobject.get_variables():
+#             # print('subobject - variable : ', variable)
+#             await append_new_attribute_to_select_clauses(variable, select_clauses, already_selected, None)
+
