@@ -2,10 +2,10 @@ import configparser
 import sys
 import os
 import logging
-from datetime import datetime, timedelta, timezone
-import math
+import logging.handlers
+from datetime import datetime, timedelta
 
-from PyQt5.QtGui import QStandardItem, QIcon, QStandardItemModel
+from PyQt5.QtGui import QStandardItem, QStandardItemModel
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -32,6 +32,9 @@ gv_user_id = 'EDGE'
 gv_db_conn_info = {'dbServer': 'DEV'}
 
 gv_ini_file_name = 'config.ini'
+gv_email_send_yn = 'N'
+gv_email_userid = ''
+gv_email_passwd = ''
 
 # static 건별 입력 기준
 gv_write_interval = 120
@@ -39,7 +42,7 @@ gv_write_interval = 120
 gv_dynamic_write_interval = 600
 
 # 로그 파일명
-gv_log_folder = 'log'
+gv_log_folder = 'logs'
 gv_main_log_file_name = 'main'
 gv_tree_log_file_name = 'tree'
 gv_static_log_file_name = 'static'
@@ -80,6 +83,44 @@ class MysqlDBConn:
                     gv_db_conn_info['dbName'] = config_file[dbServer]['dbName']
         else:
             logger.warning('!! DB ini file not found!!')
+
+
+class TlsSMTPHandler(logging.handlers.SMTPHandler):
+    def emit(self, record):
+        """
+        Emit a record.
+
+        Format the record and send it to the specified addressees.
+        """
+        try:
+            import smtplib
+            try:
+                from email.utils import formatdate
+            except ImportError:
+                formatdate = self.date_time
+            port = self.mailport
+            if not port:
+                port = smtplib.SMTP_PORT
+            smtp = smtplib.SMTP(self.mailhost, port)
+            msg = "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\n\r\n%s" % (
+                self.fromaddr,
+                # string.join(self.toaddrs, ","),
+                self.toaddrs,
+                self.getSubject(record),
+                formatdate(), record)
+
+            if self.username:
+                smtp.ehlo()  # for tls add this line
+                smtp.starttls()  # for tls add this line
+                smtp.ehlo()  # for tls add this line
+                smtp.login(self.username, self.password)
+            # print('email msg : ', msg)
+            smtp.sendmail(self.fromaddr, self.toaddrs, msg)
+            smtp.quit()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            self.handleError(record)
 
 
 class DataChangeHandler(QObject):
@@ -366,12 +407,14 @@ class EventHandler(QObject):
     event_fired = pyqtSignal(object)
     config_change_event_fired = pyqtSignal(object)
     write_event_log_fired = pyqtSignal(object)
+    email_stop_yn = 'N'
 
     def __init__(self):
         super().__init__()
 
         self.conn = None
         self.connect_db()
+        self.read_config()
 
     def connect_db(self):
         try:
@@ -410,6 +453,8 @@ class EventHandler(QObject):
             msg = ' refresh started : ' + event.Message.Text   # Condition refresh started
             e_logger.info(msg)
             self.write_event_log_fired.emit(msg)
+            # TODO delete comment
+            # self.email_stop_yn = 'Y'
 
             # Refresh 될 때 기존 event 중 active 인거 모두 inactive 로 바꿔준다
             self.clean_events()
@@ -418,6 +463,7 @@ class EventHandler(QObject):
             msg = ' refresh complete : ' + event.Message.Text   # Condition refresh completed
             e_logger.info(msg)
             self.write_event_log_fired.emit(msg)
+            self.email_stop_yn = 'N'
 
         elif event.Severity == 100:
             msg = ' server event occurred : ' + event.Message.Text
@@ -621,6 +667,14 @@ class EventHandler(QObject):
 
                 self.event_fired.emit(event)
 
+                # email 발송 여부 확인후 발송처리
+                if gv_email_send_yn == 'Y' and self.email_stop_yn == 'N':
+                    # TODO addr, msg 보강
+                    subject = 'Alarm Occured'
+                    to_addr = ['tailer9999@gmail.com', 'tailer99@sk.com']
+                    msg = event.SourceName + ' Severity - ' + str(event.Severity) + ' , Message - ' + event.Message.Text
+                    self.send_email(subject, to_addr, msg)
+
             except Exception as e:
                 msg = 'EVENT DATA INSERT error occurred : ' + str(e)
                 e_logger.error(msg)
@@ -667,6 +721,14 @@ class EventHandler(QObject):
 
                 self.event_fired.emit(event)
 
+                # email 발송 여부 확인후 발송처리
+                if gv_email_send_yn == 'Y' and self.email_stop_yn == 'N':
+                    # TODO addr, msg 보강
+                    subject = 'Alarm Occured'
+                    to_addr = ['tailer9999@gmail.com', 'tailer99@sk.com']
+                    msg = event.SourceName + ' Severity - ' + str(event.Severity) + ' , Message - ' + event.Message.Text
+                    self.send_email(subject, to_addr, msg)
+
             except Exception as e:
                 msg = 'EVENT DATA UPDATE error occurred : ' + str(e)
                 e_logger.error(msg)
@@ -711,6 +773,25 @@ class EventHandler(QObject):
                 e_logger.error(msg)
                 self.write_event_log_fired.emit(msg)
 
+    def read_config(self):
+        global gv_email_send_yn
+        global gv_email_userid
+        global gv_email_passwd
+
+        config_file = configparser.ConfigParser()
+        if config_file.read(gv_ini_file_name, encoding='utf-8'):
+
+            if config_file.has_section('EMAIL'):
+                gv_email_send_yn = config_file['EMAIL']['email_send_yn']
+                gv_email_userid = config_file['EMAIL']['userId']
+                gv_email_passwd = config_file['EMAIL']['passWd']
+        else:
+            logger.warning('!! ini file not found!!')
+
+    def send_email(self, subject, to_addr, msg):
+        gmail_sender = TlsSMTPHandler(('smtp.gmail.com', 587), 'ppdm@ppdm.io', to_addr,
+                                      subject, (gv_email_userid, gv_email_passwd))
+        gmail_sender.emit(msg)
 
 class EventUI(object):
 
@@ -805,6 +886,12 @@ class EventUI(object):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        # ### TODO DELETE mail test
+        # subject = 'Alarm Occured'
+        # to_addr = ['tailer9999@gmail.com']
+        # self.send_email(subject, to_addr, 'Mail Test')
+        # ###
 
         global logger
         logger = self.make_logger("main", "main")
@@ -1173,25 +1260,20 @@ class MainWindow(QMainWindow):
         #################################################
         #################################################
 
-        self.conn = None
-
-        # DB connect
-        self.connect_db()
-
         # setup QSettings for application and get a settings object
         QCoreApplication.setOrganizationName("SKCC")
         QCoreApplication.setApplicationName("OpcUaClient")
         self.settings = QSettings()
+
+        self.conn = None
+        # DB connect
+        self.connect_db()
 
         # read System1 list
         address_list = self.read_sys1_list()
 
         self._address_list = self.settings.value("address_list", address_list)
         self._address_list_max_count = int(self.settings.value("address_list_max_count", 5))
-
-        # init widgets
-        # for i, addr in enumerate(self._address_list):
-        #     self.addrComboBox.insertItem(i, addr)
         self.addrComboBox.addItems(self._address_list)
 
         # TODO 동작 안함
@@ -1279,6 +1361,28 @@ class MainWindow(QMainWindow):
         self.actionCall.setToolTip(_translate("MainWindow", "Call Ua Method"))
         self.actionDark_Mode.setText(_translate("MainWindow", "Dark Mode"))
         self.actionDark_Mode.setStatusTip(_translate("MainWindow", "Enables Dark Mode Theme"))
+
+    # TODO DELETE mail test 용 주석 처리
+    # def read_config(self):
+    #     global gv_email_send_yn
+    #     global gv_email_userid
+    #     global gv_email_passwd
+    #
+    #     config_file = configparser.ConfigParser()
+    #     if config_file.read(gv_ini_file_name, encoding='utf-8'):
+    #
+    #         if config_file.has_section('EMAIL'):
+    #             gv_email_send_yn = config_file['EMAIL']['email_send_yn']
+    #             gv_email_userid = config_file['EMAIL']['userId']
+    #             gv_email_passwd = config_file['EMAIL']['passWd']
+    #     else:
+    #         logger.warning('!! ini file not found!!')
+    #
+    # def send_email(self, subject, to_addr, msg):
+    #     self.read_config()
+    #     gmail_sender = TlsSMTPHandler(('smtp.gmail.com', 587), 'ppdm@ppdm.io', to_addr,
+    #                                   subject, (gv_email_userid, gv_email_passwd))
+    #     gmail_sender.emit(msg)
 
     def connect_db(self):
 
@@ -1615,7 +1719,6 @@ class MainWindow(QMainWindow):
         logger.info(msg)
         self.logTextEdit.append(msg)
 
-
         # system1 configure 정보가 바뀌어서 다시 접속해서 정보를 받아옴
         self.disconnect()
         self.connect()
@@ -1636,11 +1739,6 @@ class MainWindow(QMainWindow):
                 node = self.client.get_node(node)
 
             # insert 할 변수들 초기화
-            item_type = ''
-            nodeId = ''
-            p_nodeId = ''
-            item_name = ''
-            item_level = ''
             tag_name = ''
             item_set_point = {}
             item_EURange = {}
@@ -1824,30 +1922,37 @@ class MainWindow(QMainWindow):
 
         return item_id
 
-    def make_logger(self, type, name=None):
-        os.makedirs('./log', exist_ok=True)
+    def make_logger(self, l_type, name=None):
+        # 로그 저장할 폴더 생성
+        current_dir = os.path.dirname(os.path.realpath(__file__))
+        log_dir = '{}/{}'.format(current_dir, gv_log_folder)
+        # os.makedirs(log_dir, exist_ok=True)
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
 
-        # TODO 파일명을 현재 날짜 기준으로 바꿔야 한다
-        if type == 'main':
-            log_file_name = './' + gv_log_folder + '/' + gv_main_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        elif type == 'static':
-            log_file_name = './' + gv_log_folder + '/' + gv_static_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        elif type == 'dynamic':
-            log_file_name = './' + gv_log_folder + '/' + gv_dynamic_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        elif type == 'tree':
-            log_file_name = './' + gv_log_folder + '/' + gv_tree_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        elif type == 'event':
-            log_file_name = './' + gv_log_folder + '/' + gv_event_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
-        elif type == 'console':
+        if l_type == 'main':
+            log_file_name = log_dir + '/' + gv_main_log_file_name + '.log'
+        elif l_type == 'static':
+            log_file_name = log_dir + '/' + gv_static_log_file_name + '.log'
+        elif l_type == 'dynamic':
+            log_file_name = log_dir + '/' + gv_dynamic_log_file_name + '.log'
+        elif l_type == 'tree':
+            log_file_name = log_dir + '/' + gv_tree_log_file_name + '.log'
+        elif l_type == 'event':
+            log_file_name = log_dir + '/' + gv_event_log_file_name + '.log'
+        elif l_type == 'console':
             pass
         else:
-            log_file_name = './' + gv_log_folder + '/' + gv_etc_log_file_name + '_' + \
-                            datetime.now().date().strftime('%Y%m%d') + '.log'
+            log_file_name = gv_etc_log_file_name + '.log'
+
+        #
+        # ###  참고 ---  logger 를 생성할 때 json 파일을 이용해서 만드는 로직
+        # with open("logging.json", "rt") as file:
+        #     config = json.load(file)
+        #
+        # logging.config.dictConfig(config)
+        # logger = logging.getLogger()
+        #
 
         # 1 logger instance를 만든다.
         logger = logging.getLogger(name)
@@ -1858,26 +1963,25 @@ class MainWindow(QMainWindow):
         # 3 formatter 지정
         formatter = logging.Formatter("[%(asctime)s] - %(name)s - %(levelname)s - %(message)s")
 
+        if l_type != 'console':
+            # create daily log file
+            file_handler = logging.handlers.TimedRotatingFileHandler(
+                filename=log_file_name, when='d', interval=1, encoding='utf-8'
+            )
+            file_handler.suffix = '_%Y%m%d'
+
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+
         # 4 handler instance 생성
         console = logging.StreamHandler()
-
-        if type != 'console':
-            file_handler = logging.FileHandler(filename=log_file_name)
-
         # 5 handler 별로 다른 level 설정
-        console.setLevel(logging.INFO)
-        if type != 'console':
-            file_handler.setLevel(logging.DEBUG)
-
+        console.setLevel(logging.DEBUG)
         # 6 handler 출력 format 지정
         console.setFormatter(formatter)
-        if type != 'console':
-            file_handler.setFormatter(formatter)
-
         # 7 logger에 handler 추가
         logger.addHandler(console)
-        if type != 'console':
-            logger.addHandler(file_handler)
 
         return logger
 
