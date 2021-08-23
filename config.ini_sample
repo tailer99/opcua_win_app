@@ -1,0 +1,27 @@
+[DB]
+    [DEV]
+         hostIp = 10.178.59.59
+         port = 3666
+         userNm = dacardev
+         passWd =
+         dbName = dacardev
+    [PROD]
+         hostIp = 10.178.59.8
+         port = 3666
+         userNm = dacardev
+         passWd =
+         dbName = dacardev
+[LOG]
+write_interval=
+static=
+dynamic=
+
+[EMAIL]
+email_send_yn=N
+userId=
+passWd=
+
+[LINE]
+line_send_yn=Y
+groupId=
+access_token=
