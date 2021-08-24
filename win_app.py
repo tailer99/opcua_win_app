@@ -685,12 +685,12 @@ class EventHandler(QObject):
                     msg = event.SourceName + ' Severity - ' + str(event.Severity) + ' , Message - ' + event.Message.Text
                     self.send_email(subject, to_addr, msg)
 
-                # line message 발송 여부 확인후 발송처리
-                if gv_line_send_yn == 'Y' and self.line_stop_yn == 'N':
-                    # TODO addr, msg 보강
-                    to_id = gv_line_group_id
-                    msg = event.SourceName + ' Severity - ' + str(event.Severity) + ' , Message - ' + event.Message.Text
-                    send_message.send_line_message(to_id, msg)
+                # # line message 발송 여부 확인후 발송처리
+                # if gv_line_send_yn == 'Y' and self.line_stop_yn == 'N':
+                #     # TODO addr, msg 보강
+                #     to_id = gv_line_group_id
+                #     msg = event.SourceName + ' Severity - ' + str(event.Severity) + ' , Message - ' + event.Message.Text
+                #     send_message.send_line_message(to_id, msg)
 
             except Exception as e:
                 msg = 'EVENT DATA INSERT error occurred : ' + str(e)
@@ -746,13 +746,13 @@ class EventHandler(QObject):
                     msg = event.SourceName + ' Severity - ' + str(event.Severity) + ' , Message - ' + event.Message.Text
                     self.send_email(subject, to_addr, msg)
 
-                # line message 발송 여부 확인후 발송처리
-                if gv_line_send_yn == 'Y' and self.line_stop_yn == 'N':
-                    # TODO addr, msg 보강
-                    to_id = gv_line_group_id
-                    msg = event.SourceName + ' Severity - ' + str(
-                        event.Severity) + ' , Message - ' + event.Message.Text
-                    send_message.send_line_message(to_id, msg)
+                # # line message 발송 여부 확인후 발송처리
+                # if gv_line_send_yn == 'Y' and self.line_stop_yn == 'N':
+                #     # TODO addr, msg 보강
+                #     to_id = gv_line_group_id
+                #     msg = event.SourceName + ' Severity - ' + str(
+                #         event.Severity) + ' , Message - ' + event.Message.Text
+                #     send_message.send_line_message(to_id, msg)
 
             except Exception as e:
                 msg = 'EVENT DATA UPDATE error occurred : ' + str(e)
