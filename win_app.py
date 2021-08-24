@@ -1959,7 +1959,7 @@ class MainWindow(QMainWindow):
 
     def make_logger(self, l_type, name=None):
         # 로그 저장할 폴더 생성
-        current_dir = os.path.dirname(os.path.realpath(__file__))
+        current_dir = os.path.abspath(os.path.curdir)
         log_dir = '{}/{}'.format(current_dir, gv_log_folder)
         # os.makedirs(log_dir, exist_ok=True)
         if not os.path.exists(log_dir):
