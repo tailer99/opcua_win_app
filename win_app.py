@@ -1,3 +1,4 @@
+import asyncio
 import configparser
 import sys
 import os
@@ -9,7 +10,7 @@ from PyQt5.QtGui import QStandardItem, QStandardItemModel
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5 import QtCore, QtGui, QtWidgets
-from asyncua import ua, common, client
+from asyncua import ua, common, client, sync
 from asyncua.sync import Client, SyncNode
 
 from uawidgets import tree_widget, refs_widget, attrs_widget, logger
@@ -582,7 +583,7 @@ class EventHandler(QObject):
 
         with self.conn.cursor() as curs:
             try:
-                # event id 는 계속 새로 나와서 source node 로 바꿈
+                condition_id = str(event.Value)
                 node_id = str(event.SourceNode)
 
                 measurement_id, point_id, company_id = self.search_item_id(curs, gv_sys1_id, event.SourceNode)
@@ -655,17 +656,17 @@ class EventHandler(QObject):
                 else:
                     under_lowlow_value = round(event.BaseLowLowLimit, 3)
 
-                sql = "insert into SDA_EVENT(SYS1_ID, NODE_ID, POINT_ID, MEASUREMENT_ID, " \
+                sql = "insert into SDA_EVENT(SYS1_ID, CONDITION_ID, POINT_ID, MEASUREMENT_ID, " \
                       "ALARM_LEVEL, UTC_ENTERED_DT, UTC_LEFT_DT, IS_ACTIVE, MACHINE, POINT, MEASUREMENT, " \
-                      "TRIGGER_VALUE, UTC_RECEIVE_DT, SMS_SEND_YN, " \
+                      "TRIGGER_VALUE, UTC_RECEIVE_DT, SMS_SEND_YN, NODE_ID, " \
                       "OVER_HIGHHIGH_VALUE, UNDER_HIGHHIGH_VALUE, OVER_HIGH_VALUE, UNDER_HIGH_VALUE, " \
                       "OVER_LOW_VALUE, UNDER_LOW_VALUE, OVER_LOWLOW_VALUE, UNDER_LOWLOW_VALUE, " \
                       "CREATE_ID, CREATE_DT) " \
                       "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, " \
-                      " round(%s,3), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                      " round(%s,3), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
                 record = (
-                    gv_sys1_id, node_id, point_id, measurement_id, alarm_level, utc_entered_dt, utc_left_dt, is_active,
-                    machine, point, measurement, trigger_value, utc_receive_dt, 'N',
+                    gv_sys1_id, condition_id, point_id, measurement_id, alarm_level, utc_entered_dt, utc_left_dt, is_active,
+                    machine, point, measurement, trigger_value, utc_receive_dt, 'N', node_id,
                     over_highhigh_value, under_highhigh_value, over_high_value, under_high_value,
                     over_low_value, under_low_value, over_lowlow_value, under_lowlow_value,
                     gv_user_id)
@@ -704,21 +705,15 @@ class EventHandler(QObject):
 
         with self.conn.cursor() as curs:
             try:
-                # event id 는 계속 새로 나와서 source node 로 바꿈
-                node_id = str(event.SourceNode)
-
-                alarm_level = event.ConditionName[-1]
+                condition_id = str(event.Value)
 
                 if event.ActiveState.Text == 'Active':
-                    utc_entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
                     utc_left_dt = ''
                     is_active = 1
                 elif event.ActiveState.Text == 'Inactive':
-                    utc_entered_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
                     utc_left_dt = event.Time.strftime('%Y-%m-%d %H:%M:%S')
                     is_active = 0
                 else:
-                    utc_entered_dt = ''
                     utc_left_dt = ''
                     is_active = 2
 
@@ -726,10 +721,8 @@ class EventHandler(QObject):
                       "set    UTC_LEFT_DT = %s, IS_ACTIVE = %s, " \
                       "       UPDATE_ID = %s, UPDATE_DT = NOW() " \
                       "where  SYS1_ID = %s " \
-                      "and    NODE_ID = %s " \
-                      "and    ALARM_LEVEL = %s " \
-                      "and    UTC_ENTERED_DT = %s "
-                record = (utc_left_dt, is_active, gv_user_id, gv_sys1_id, node_id, alarm_level, utc_entered_dt)
+                      "and    CONDITION_ID = %s "
+                record = (utc_left_dt, is_active, gv_user_id, gv_sys1_id, condition_id)
 
                 # e_logger.error(sql + '    ' + str(record))
                 curs.execute(sql, record)
@@ -781,11 +774,9 @@ class EventHandler(QObject):
             try:
                 sql = "select ifnull(max(case when IS_ACTIVE = 1 then 1 else -1 end),0) " \
                       "from SDA_EVENT " \
-                      "where SYS1_ID = %s and NODE_ID = %s " \
-                      "and   UTC_ENTERED_DT = %s " \
-                      "and   ALARM_LEVEL = %s "
-                record = (int(gv_sys1_id), str(event.SourceNode), event.Time.strftime('%Y-%m-%d %H:%M:%S'),
-                          event.ConditionName[-1])
+                      "where SYS1_ID = %s " \
+                      "and CONDITION_ID = %s "
+                record = (int(gv_sys1_id), str(event.Value))
 
                 # print(sql, '    ', record)
                 curs.execute(sql, record)
@@ -2194,6 +2185,19 @@ class MainWindow(QMainWindow):
         if node.nodeid in self._subs_datachange:
             del self._subs_datachange[node.nodeid]
 
+    # to make conditionId column, create event filter manually
+    def create_event_filter(self, tloop, evtypes):
+
+        evfilter = get_filter_from_event_type(tloop, evtypes)
+        op = ua.SimpleAttributeOperand()
+        op.TypeDefinitionId = ua.TwoByteNodeId(0)
+        op.AttributeId = ua.AttributeIds.Value
+        op.BrowsePath = []
+        evfilter.SelectClauses.append(op)
+        # print(' add condition id : ', op, evfilter.SelectClauses)
+
+        return evfilter
+
     def subscribe_events(self, node, handler):
         if not self._event_sub:
             self._event_sub = self.client.create_subscription(500, handler)
@@ -2202,16 +2206,11 @@ class MainWindow(QMainWindow):
             global gv_event_subscription_id
             gv_event_subscription_id = self._event_sub.aio_obj.subscription_id
 
-        evtypes = [ua.ObjectIds.RefreshRequiredEventType,
-                   ua.ObjectIds.RefreshStartEventType, ua.ObjectIds.RefreshEndEventType,
-                   ua.ObjectIds.SystemEventType,
-                   ua.ObjectIds.DeviceFailureEventType,
-                   ua.ObjectIds.SystemStatusChangeEventType,
-                   ua.ObjectIds.ConditionType,
-                   ua.ObjectIds.NonExclusiveLevelAlarmType]
+        evtypes = [self.client.get_node('ns=2;i=1002')]
         # print('evtypes : ', evtypes)
 
-        handle = self._event_sub.subscribe_events(evtypes=evtypes, sourcenode=node)
+        evfilter = self.create_event_filter(node.tloop, evtypes)
+        handle = self._event_sub.subscribe_events(evtypes=evtypes, sourcenode=node, evfilter=evfilter)
 
         # print('check :: ', type(self._event_sub), handle)
         self._subs_event[node.nodeid] = handle
@@ -2246,6 +2245,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self.statusBar.showMessage(''))
 
 
+@sync.syncfunc(aio_func=common.events.get_filter_from_event_type)
+def get_filter_from_event_type(eventtypes):
+    pass
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()
@@ -2255,15 +2258,3 @@ if __name__ == '__main__':
     # window.showFullScreen()
 
     sys.exit(app.exec_())
-
-
-# # daniel edited : add to child object
-# # asyncua>common>events>select_clauses_from_evtype : line 170
-# for subobject in await evtype.get_children():
-#     subobjName = await subobject.read_display_name()
-#     # print('subobject : ', subobject, subobjName.Text, type(subobject))
-#     if subobjName.Text == "System1NonExclusiveLevelAlarmType":
-#         for variable in await subobject.get_variables():
-#             # print('subobject - variable : ', variable)
-#             await append_new_attribute_to_select_clauses(variable, select_clauses, already_selected, None)
-
