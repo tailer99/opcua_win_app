@@ -1936,7 +1936,7 @@ class MainWindow(QMainWindow):
         # if not found
         if search_cnt == 0:
             sql = "insert into SDA_NODE_ITEM_MAPPING(SYS1_ID, NODE_ID, ITEM_NAME, ITEM_CLASS, CREATE_DT) " \
-                  "select %s, %s, %s, NOW()"
+                  "select %s, %s, %s, %s, NOW()"
             record = (sys1_id, node_id, item_name, item_class)
             curs.execute(sql, record)
             self.conn.commit()
