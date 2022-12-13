@@ -9,7 +9,6 @@ cryptography==3.4.7
 future==0.18.2
 idna==3.2
 importlib-metadata==4.6.4
-line-bot-sdk==1.20.0
 macholib==1.15
 pycparser==2.20
 pyinstaller==4.5.1

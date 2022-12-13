@@ -17,7 +17,7 @@ from uawidgets import tree_widget, refs_widget, attrs_widget, logger
 from uawidgets.utils import trycatchslot
 
 import pymysql
-import send_message
+# import send_message
 
 logger = None
 t_logger = None
@@ -76,7 +76,9 @@ class MysqlDBConn:
         global gv_db_conn_info
 
         config_file = configparser.ConfigParser()
-        if config_file.read(gv_ini_file_name, encoding='utf-8'):
+        current_dir = os.path.abspath(os.path.curdir)
+        ini_file = current_dir + '/' + gv_ini_file_name
+        if config_file.read(ini_file, encoding='utf-8'):
 
             if config_file.has_section('DB'):
                 if config_file.has_section(dbServer):
